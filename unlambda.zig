@@ -60,7 +60,7 @@ pub const Runtime = struct {
         self.memory.deinit();
     }
 
-    pub fn interpret(self: *Runtime, code: []const Func) !void {
+    pub fn interpret(self: *Runtime, code: []const Func) !Func {
         const n = self.memory.items.len;
         try self.memory.ensureUnusedCapacity(code.len);
         for (code) |f| {
@@ -69,8 +69,7 @@ pub const Runtime = struct {
         if (code[n] != .apply) {
             @panic("malformed unlambda code. Should start with apply symbol '`'");
         }
-        _ = self._interpret(@intCast(n));
-        return;
+        return self._interpret(@intCast(n));
     }
 
     pub fn get(self: *const Runtime, n: Func.Id) Func {
@@ -209,4 +208,23 @@ test "delayed" {
     try testOutputEql("*", &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, p('*'), i, i });
 }
 
-// TODO test s
+fn testFn(code: []const u8, in_outs: []const [2]Func) !void {
+    var runtime = try Runtime.init(std.testing.allocator);
+    defer runtime.deinit();
+    _ = try runtime.parse(code);
+
+    const n: u32 = @intCast(runtime.memory.items.len);
+    for (in_outs) |in_out| {
+        const in, const out = in_out;
+        defer runtime.memory.items.len = n;
+        try runtime.memory.append(in);
+        try runtime.memory.append(.{ .apply = .{ n - 1, n } });
+        const res = runtime._interpret(n + 1);
+        try std.testing.expectEqual(out, res);
+    }
+}
+
+test s {
+    // ``skk is the identity
+    try testFn("``skk", &.{ .{ v, v }, .{ p('*'), p('*') } });
+}
