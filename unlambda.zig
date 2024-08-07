@@ -4,22 +4,29 @@ const builtin = @import("builtin");
 pub const Func = union(enum) {
     const Id = u32;
 
-    apply2: [2]Id,
+    /// Function application operator: `fg <=> f(g)
+    apply: [2]Id,
 
+    /// identity function
     i,
 
+    /// "constant factory" ``kxy -> x
     k,
     k1: Id,
 
+    /// substitution function: ```sxyz -> ``xz`yz
     s,
     s1: Id,
     s2: [2]Id,
 
+    /// "void" `vx -> v
     v,
 
+    /// delayed function. The evaluation of the argument of this function will be delayed.
     d,
     d1: Id,
 
+    /// print a char to stdout.
     print: u8,
 };
 
@@ -59,7 +66,7 @@ pub const Runtime = struct {
         for (code) |f| {
             self.memory.appendAssumeCapacity(f);
         }
-        if (code[n] != .apply2) {
+        if (code[n] != .apply) {
             @panic("malformed unlambda code. Should start with apply symbol '`'");
         }
         _ = self._interpret(@intCast(n));
@@ -77,7 +84,7 @@ pub const Runtime = struct {
                 const n: Func.Id = @intCast(self.memory.items.len - 1);
                 const remaining2 = try self.parse(remaining);
                 const m: Func.Id = @intCast(self.memory.items.len - 1);
-                try self.memory.append(.{ .apply2 = .{ n, m } });
+                try self.memory.append(.{ .apply = .{ n, m } });
                 // if (remaining2.len != 0) std.debug.panic("Invalide unlambda code. Trailing code: {s}", .{remaining2});
                 return remaining2;
             },
@@ -99,7 +106,7 @@ pub const Runtime = struct {
         const x = self.get(n);
 
         switch (x) {
-            .apply2 => |fg| {
+            .apply => |fg| {
                 const f = self.get(fg[0]);
                 return self.call(f, fg[1]);
             },
@@ -138,7 +145,7 @@ pub const Runtime = struct {
                 const f0 = self.get(f0_id);
                 return self.call(f0, g_id);
             },
-            .apply2 => |fg| {
+            .apply => |fg| {
                 // We need to resolve this apply to be able to call it.
                 const f0 = self.call(self.get(fg[0]), fg[1]);
                 return self.call(f0, g_id);
@@ -171,35 +178,35 @@ test "parse" {
     {
         runtime.memory.clearRetainingCapacity();
         _ = try runtime.parse("`.*v");
-        try std.testing.expectEqualSlices(Func, &.{ p('*'), v, .{ .apply2 = .{ 0, 1 } } }, runtime.memory.items);
+        try std.testing.expectEqualSlices(Func, &.{ p('*'), v, .{ .apply = .{ 0, 1 } } }, runtime.memory.items);
     }
 
     {
         runtime.memory.clearRetainingCapacity();
         _ = try runtime.parse("`d`.*i");
-        try std.testing.expectEqualSlices(Func, &.{ d, p('*'), i, .{ .apply2 = .{ 1, 2 } }, .{ .apply2 = .{ 0, 3 } } }, runtime.memory.items);
+        try std.testing.expectEqualSlices(Func, &.{ d, p('*'), i, .{ .apply = .{ 1, 2 } }, .{ .apply = .{ 0, 3 } } }, runtime.memory.items);
     }
     {
         runtime.memory.clearRetainingCapacity();
         _ = try runtime.parse("``d`.*ii ");
-        try std.testing.expectEqualSlices(Func, &.{ d, p('*'), i, .{ .apply2 = .{ 1, 2 } }, .{ .apply2 = .{ 0, 3 } }, i, .{ .apply2 = .{ 4, 5 } } }, runtime.memory.items);
+        try std.testing.expectEqualSlices(Func, &.{ d, p('*'), i, .{ .apply = .{ 1, 2 } }, .{ .apply = .{ 0, 3 } }, i, .{ .apply = .{ 4, 5 } } }, runtime.memory.items);
     }
 }
 
 test "print" {
     // `.*v -> print *
-    try testOutputEql("*", &.{ .{ .apply2 = .{ 1, 2 } }, p('*'), v });
+    try testOutputEql("*", &.{ .{ .apply = .{ 1, 2 } }, p('*'), v });
     try testCodeOutput("`.*v", "*");
 }
 
 test "delayed" {
     // `d`.*i -> create a delayed
     try testCodeOutput("`d`.*i", "");
-    try testOutputEql("", &.{ .{ .apply2 = .{ 1, 2 } }, d, .{ .apply2 = .{ 3, 4 } }, p('*'), i });
+    try testOutputEql("", &.{ .{ .apply = .{ 1, 2 } }, d, .{ .apply = .{ 3, 4 } }, p('*'), i });
 
     // ``d`.*ii -> create a delayed, then force the evaluation -> print *
     try testCodeOutput("``d`.*ii", "*");
-    try testOutputEql("*", &.{ .{ .apply2 = .{ 1, 6 } }, .{ .apply2 = .{ 2, 3 } }, d, .{ .apply2 = .{ 4, 5 } }, p('*'), i, i });
+    try testOutputEql("*", &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, p('*'), i, i });
 }
 
 // TODO test s
