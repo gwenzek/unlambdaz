@@ -12,22 +12,30 @@ pub const Func = union(enum) {
 
     /// "constant factory" ``kxy -> x
     k,
-    k1: Id,
+    _k1: Id,
 
     /// substitution function: ```sxyz -> ``xz`yz
     s,
-    s1: Id,
-    s2: [2]Id,
+    _s1: Id,
+    _s2: [2]Id,
 
     /// "void" `vx -> v
     v,
 
     /// delayed function. The evaluation of the argument of this function will be delayed.
     d,
-    d1: Id,
+    _d1: Id,
+
+    /// call with current continuation
+    // TODO
+    // c,
+    // _cont: Id,
 
     /// print a char to stdout.
     print: u8,
+    // TODO @, ?*, | to read stdin
+
+    // TODO e
 };
 
 pub const i: Func = .i;
@@ -35,12 +43,11 @@ pub const k: Func = .k;
 pub const s: Func = .s;
 pub const v: Func = .v;
 pub const d: Func = .d;
+pub const r: Func = .{ .print = '\n' };
 
 pub fn p(c: u8) Func {
     return .{ .print = c };
 }
-
-pub const r: Func = .{ .print = '\n' };
 
 pub const Runtime = struct {
     output: std.BoundedArray(u8, 4096) = .{},
@@ -76,9 +83,12 @@ pub const Runtime = struct {
         return self.memory.items[n];
     }
 
+    // TODO parse should be standalone, not part of Runtime struct.
+    // TODO accept a slice and position so we can have proper errors
+    // TODO have a user facing parse that doesn't return
     pub fn parse(self: *Runtime, code: []const u8) ![]const u8 {
         if (code.len == 0) @panic("unexpected end of code");
-        switch (code[0]) {
+        return switch (code[0]) {
             '`' => {
                 const remaining = try self.parse(code[1..]);
                 const n: Func.Id = @intCast(self.memory.items.len - 1);
@@ -101,8 +111,11 @@ pub const Runtime = struct {
                 try self.memory.append(p(code[1]));
                 return code[2..];
             },
+            // skip whitespaces
+            ' ', '\n' => code[1..],
+            // TODO comments #...
             else => |c| std.debug.panic("Invalide unlambda code. unexpected char {d}", .{c}),
-        }
+        };
     }
 
     fn _interpret(self: *Runtime, n: Func.Id) Func {
@@ -131,24 +144,30 @@ pub const Runtime = struct {
                 }
                 return g;
             },
-            .k => .{ .k1 = g_id },
-            .k1 => |cst| self.get(cst),
-            .s => .{ .s1 = g_id },
-            .s1 => |x| .{ .s2 = .{ x, g_id } },
-            .s2 => |xy| {
+            .k => .{ ._k1 = g_id },
+            ._k1 => |cst| self.get(cst),
+            .s => .{ ._s1 = g_id },
+            ._s1 => |x| .{ ._s2 = .{ x, g_id } },
+            ._s2 => |xy| {
+                // The substitution operator requires allocation.
+                // This is expected because 's' is what makes Unlambda Turing complete.
+                // But currently we don't have a strategy to free memory.
+                // The Unlambda one pager suggest using reference counting,
+                // since it's not possible to create cycles.
+                // TODO: implement RC and a free list.
                 const f0 = self.call(self.get(xy[0]), g_id);
                 if (f0 == .d) {
                     const delayed: Func = .{ .apply = .{ xy[1], g_id } };
                     const n_delayed = self.push(delayed) catch unreachable; // TODO: propagate oom
-                    return .{ .d1 = n_delayed };
+                    return .{ ._d1 = n_delayed };
                 }
                 const g0 = self.call(self.get(xy[1]), g_id);
                 const g0_id = self.push(g0) catch unreachable; // TODO: propagate oom
                 return self.call(f0, g0_id);
             },
             .v => .v,
-            .d => .{ .d1 = g_id },
-            .d1 => |f0_id| {
+            .d => .{ ._d1 = g_id },
+            ._d1 => |f0_id| {
                 // Force the evaluation of the delayed.
                 const f0 = self.get(f0_id);
                 return self.call(f0, g_id);
@@ -221,6 +240,7 @@ test "delayed" {
     try testCodeOutput("``d`rii", "\n");
     try testOutputEql("\n", &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, r, i, i });
 
+    // ```s`kdri -> ` ``kdi `ri -> `d`ri -> the printing is delayed
     try testCodeOutput("```s`kdri", "");
 }
 
