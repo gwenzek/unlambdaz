@@ -77,6 +77,7 @@ pub const Runtime = struct {
     }
 
     pub fn parse(self: *Runtime, code: []const u8) ![]const u8 {
+        if (code.len == 0) @panic("unexpected end of code");
         switch (code[0]) {
             '`' => {
                 const remaining = try self.parse(code[1..]);
@@ -90,6 +91,10 @@ pub const Runtime = struct {
             inline 'd', 'i', 's', 'k', 'v' => |name| {
                 const f = @unionInit(Func, &.{name}, {});
                 try self.memory.append(f);
+                return code[1..];
+            },
+            'r' => {
+                try self.memory.append(r);
                 return code[1..];
             },
             '.' => {
@@ -132,10 +137,14 @@ pub const Runtime = struct {
             .s1 => |x| .{ .s2 = .{ x, g_id } },
             .s2 => |xy| {
                 const f0 = self.call(self.get(xy[0]), g_id);
-                std.debug.assert(f0 != .d); // TODO
+                if (f0 == .d) {
+                    const delayed: Func = .{ .apply = .{ xy[1], g_id } };
+                    const n_delayed = self.push(delayed) catch unreachable; // TODO: propagate oom
+                    return .{ .d1 = n_delayed };
+                }
                 const g0 = self.call(self.get(xy[1]), g_id);
-                self.memory.append(g0) catch unreachable; // TODO: propagate oom
-                return self.call(f0, @intCast(self.memory.items.len - 1));
+                const g0_id = self.push(g0) catch unreachable; // TODO: propagate oom
+                return self.call(f0, g0_id);
             },
             .v => .v,
             .d => .{ .d1 = g_id },
@@ -150,6 +159,11 @@ pub const Runtime = struct {
                 return self.call(f0, g_id);
             },
         };
+    }
+
+    pub fn push(self: *Runtime, f: Func) !Func.Id {
+        try self.memory.append(f);
+        return @intCast(self.memory.items.len - 1);
     }
 };
 
@@ -199,13 +213,15 @@ test "print" {
 }
 
 test "delayed" {
-    // `d`.*i -> create a delayed
-    try testCodeOutput("`d`.*i", "");
-    try testOutputEql("", &.{ .{ .apply = .{ 1, 2 } }, d, .{ .apply = .{ 3, 4 } }, p('*'), i });
+    // `d`ri -> create a delayed
+    try testCodeOutput("`d`ri", "");
+    try testOutputEql("", &.{ .{ .apply = .{ 1, 2 } }, d, .{ .apply = .{ 3, 4 } }, r, i });
 
-    // ``d`.*ii -> create a delayed, then force the evaluation -> print *
-    try testCodeOutput("``d`.*ii", "*");
-    try testOutputEql("*", &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, p('*'), i, i });
+    // ``d`.*ii -> create a delayed, then force the evaluation -> print new line
+    try testCodeOutput("``d`rii", "\n");
+    try testOutputEql("\n", &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, r, i, i });
+
+    try testCodeOutput("```s`kdri", "");
 }
 
 fn testFn(code: []const u8, in_outs: []const [2]Func) !void {
