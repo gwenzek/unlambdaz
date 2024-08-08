@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const log = std.log.scoped(.unlambda);
 
 pub const Func = union(enum) {
     const Id = u32;
@@ -49,13 +50,67 @@ pub fn p(c: u8) Func {
     return .{ .print = c };
 }
 
+pub fn parse(out: *std.ArrayList(Func), code: []const u8) error{ OutOfMemory, Invalid }!void {
+    var n = try _parse(out, code, 0);
+    // detect trailing code that didn't get parsed. Whitespace is ok though.
+    while (n < code.len) {
+        switch (code[n]) {
+            ' ', '\n', '\t' => n += 1,
+            // TODO accept trailing comments
+            else => {
+                log.err("Invalide unlambda code. Trailing code at pos {d}: {s}|{s} ({d})", .{ n, code[0..n], code[n..], code.len });
+                return error.Invalid;
+            },
+        }
+    }
+}
+
+pub fn _parse(out: *std.ArrayList(Func), code: []const u8, pos: usize) error{ OutOfMemory, Invalid }!usize {
+    if (pos >= code.len) {
+        log.err("unexpected end of code", .{});
+        return error.Invalid;
+    }
+
+    return switch (code[pos]) {
+        '`' => {
+            // reserve a slot for apply, but don't keep the pointer, which can be invalidated.
+            _ = try out.addOne();
+            const n: Func.Id = @intCast(out.items.len);
+            const remaining = try _parse(out, code, pos + 1);
+            const m: Func.Id = @intCast(out.items.len);
+            const remaining2 = try _parse(out, code, remaining);
+            out.items[n - 1] = .{ .apply = .{ n, m } };
+            return remaining2;
+        },
+        inline 'd', 'i', 's', 'k', 'v' => |name| {
+            const f = @unionInit(Func, &.{name}, {});
+            try out.append(f);
+            return pos + 1;
+        },
+        'r' => {
+            try out.append(r);
+            return pos + 1;
+        },
+        '.' => {
+            try out.append(p(code[pos + 1]));
+            return pos + 2;
+        },
+        // skip whitespaces
+        ' ', '\n', '\t' => _parse(out, code, pos + 1),
+        // TODO comments #...
+        else => |c| std.debug.panic("Invalide unlambda code. unexpected char {d}", .{c}),
+    };
+}
+
 pub const Runtime = struct {
-    output: std.BoundedArray(u8, 4096) = .{},
     memory: std.ArrayList(Func),
+    output: std.BoundedArray(u8, 4096) = .{},
+    stdout: std.fs.File,
 
     pub fn init(allocator: std.mem.Allocator) !Runtime {
         const res: Runtime = .{
             .memory = std.ArrayList(Func).init(allocator),
+            .stdout = std.io.getStdOut(),
         };
 
         // const well_known_funcs = [_]Func{ i, k, s, v, d };
@@ -68,58 +123,19 @@ pub const Runtime = struct {
     }
 
     pub fn interpret(self: *Runtime, code: []const Func) !Func {
-        const n = self.memory.items.len;
-        try self.memory.ensureUnusedCapacity(code.len);
-        for (code) |f| {
-            self.memory.appendAssumeCapacity(f);
-        }
-        if (code[n] != .apply) {
+        try self.memory.appendSlice(code);
+        if (self.get(0) != .apply) {
             @panic("malformed unlambda code. Should start with apply symbol '`'");
         }
-        return self._interpret(@intCast(n));
+        return self._interpret(0);
     }
 
     pub fn get(self: *const Runtime, n: Func.Id) Func {
         return self.memory.items[n];
     }
 
-    // TODO parse should be standalone, not part of Runtime struct.
-    // TODO accept a slice and position so we can have proper errors
-    // TODO have a user facing parse that doesn't return
-    pub fn parse(self: *Runtime, code: []const u8) ![]const u8 {
-        if (code.len == 0) @panic("unexpected end of code");
-        return switch (code[0]) {
-            '`' => {
-                const remaining = try self.parse(code[1..]);
-                const n: Func.Id = @intCast(self.memory.items.len - 1);
-                const remaining2 = try self.parse(remaining);
-                const m: Func.Id = @intCast(self.memory.items.len - 1);
-                try self.memory.append(.{ .apply = .{ n, m } });
-                // if (remaining2.len != 0) std.debug.panic("Invalide unlambda code. Trailing code: {s}", .{remaining2});
-                return remaining2;
-            },
-            inline 'd', 'i', 's', 'k', 'v' => |name| {
-                const f = @unionInit(Func, &.{name}, {});
-                try self.memory.append(f);
-                return code[1..];
-            },
-            'r' => {
-                try self.memory.append(r);
-                return code[1..];
-            },
-            '.' => {
-                try self.memory.append(p(code[1]));
-                return code[2..];
-            },
-            // skip whitespaces
-            ' ', '\n' => code[1..],
-            // TODO comments #...
-            else => |c| std.debug.panic("Invalide unlambda code. unexpected char {d}", .{c}),
-        };
-    }
-
     fn _interpret(self: *Runtime, n: Func.Id) Func {
-        std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
+        // std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
         const x = self.get(n);
 
         switch (x) {
@@ -133,14 +149,14 @@ pub const Runtime = struct {
 
     pub fn call(self: *Runtime, f: Func, g_id: Func.Id) Func {
         const g = self.get(g_id);
-        std.log.warn("call({}, {})", .{ f, g });
+        // std.log.warn("call({}, {})", .{ f, g });
         return switch (f) {
             .i => g,
             .print => |c| {
                 if (builtin.is_test) {
                     self.output.appendAssumeCapacity(c);
                 } else {
-                    std.debug.print("{s}", .{c});
+                    std.debug.print("{s}", .{&[1]u8{c}});
                 }
                 return g;
             },
@@ -195,33 +211,35 @@ fn testOutputEql(expected: []const u8, code: []const Func) !void {
 }
 
 fn testCodeOutput(code: []const u8, expected: []const u8) !void {
-    var runtime = try Runtime.init(std.testing.allocator);
-    defer runtime.deinit();
-    _ = try runtime.parse(code);
-    // parse put the apply at end
-    _ = runtime._interpret(@intCast(runtime.memory.items.len - 1));
+    var bytecode = std.ArrayList(Func).init(std.testing.allocator);
+    defer bytecode.deinit();
+    try parse(&bytecode, code);
+
+    var runtime: Runtime = .{ .memory = bytecode, .stdout = undefined };
+
+    _ = runtime._interpret(0);
     try std.testing.expectEqualStrings(expected, runtime.output.constSlice());
 }
 
 test "parse" {
-    var runtime = try Runtime.init(std.testing.allocator);
-    defer runtime.deinit();
+    var bytecode = std.ArrayList(Func).init(std.testing.allocator);
+    defer bytecode.deinit();
 
     {
-        runtime.memory.clearRetainingCapacity();
-        _ = try runtime.parse("`.*v");
-        try std.testing.expectEqualSlices(Func, &.{ p('*'), v, .{ .apply = .{ 0, 1 } } }, runtime.memory.items);
+        bytecode.clearRetainingCapacity();
+        try parse(&bytecode, "`.*v");
+        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 2 } }, p('*'), v }, bytecode.items);
     }
 
     {
-        runtime.memory.clearRetainingCapacity();
-        _ = try runtime.parse("`d`.*i");
-        try std.testing.expectEqualSlices(Func, &.{ d, p('*'), i, .{ .apply = .{ 1, 2 } }, .{ .apply = .{ 0, 3 } } }, runtime.memory.items);
+        bytecode.clearRetainingCapacity();
+        try parse(&bytecode, "`d`.*i");
+        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 2 } }, d, .{ .apply = .{ 3, 4 } }, p('*'), i }, bytecode.items);
     }
     {
-        runtime.memory.clearRetainingCapacity();
-        _ = try runtime.parse("``d`.*ii ");
-        try std.testing.expectEqualSlices(Func, &.{ d, p('*'), i, .{ .apply = .{ 1, 2 } }, .{ .apply = .{ 0, 3 } }, i, .{ .apply = .{ 4, 5 } } }, runtime.memory.items);
+        bytecode.clearRetainingCapacity();
+        try parse(&bytecode, "``d`.*ii ");
+        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, p('*'), i, i }, bytecode.items);
     }
 }
 
@@ -245,17 +263,20 @@ test "delayed" {
 }
 
 fn testFn(code: []const u8, in_outs: []const [2]Func) !void {
-    var runtime = try Runtime.init(std.testing.allocator);
+    var bytecode = std.ArrayList(Func).init(std.testing.allocator);
+    try parse(&bytecode, code);
+    var runtime: Runtime = .{ .memory = bytecode, .stdout = undefined };
+    bytecode = undefined;
+    // bytecode shouldn't be used anymore, it's owned by the runtime now.
     defer runtime.deinit();
-    _ = try runtime.parse(code);
 
     const n: u32 = @intCast(runtime.memory.items.len);
     for (in_outs) |in_out| {
         const in, const out = in_out;
         defer runtime.memory.items.len = n;
-        try runtime.memory.append(in);
-        try runtime.memory.append(.{ .apply = .{ n - 1, n } });
-        const res = runtime._interpret(n + 1);
+        const in_idx = try runtime.push(in);
+        const apply_idx = try runtime.push(.{ .apply = .{ 0, in_idx } });
+        const res = runtime._interpret(apply_idx);
         try std.testing.expectEqual(out, res);
     }
 }
@@ -263,4 +284,24 @@ fn testFn(code: []const u8, in_outs: []const [2]Func) !void {
 test s {
     // ``skk is the identity
     try testFn("``skk", &.{ .{ v, v }, .{ p('*'), p('*') } });
+}
+
+pub fn main() !void {
+    const fib =
+        \\
+        \\ ```s``s``sii`ki
+        \\   `k.*``s``s`ks
+        \\   ``s`k`s`ks``s``s`ks``s`k`s`kr``s`k`sikk
+        \\   `k``s`ksk
+    ;
+
+    var bytecode = std.ArrayList(Func).init(std.heap.page_allocator);
+    defer bytecode.deinit();
+    try parse(&bytecode, fib);
+
+    var runtime: Runtime = .{
+        .memory = bytecode,
+        .stdout = std.io.getStdOut(),
+    };
+    _ = try runtime.interpret(&.{});
 }
