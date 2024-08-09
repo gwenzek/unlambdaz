@@ -198,8 +198,10 @@ Examples of c include ``cir: here, `ci evaluates to the continuation of the c wh
 Expressions including c function calls tend to be hopelessly difficult to track down. This was, of course, the reason for including it in the language in the first place.
 
 As an exercice in using c, you might try constructing an expression that when applied to v returns i, and when applied to i returns v (this is not possible in the absence of c). Answer is in the HOWTO section on booleans.
-HOWTO: various programming techniques
-How do I write a loop in Unlambda?
+
+## HOWTO: various programming techniques
+
+### How do I write a loop in Unlambda?
 
 We'll explain this with a simple example: how to write a loop that prints “Hello, world!” over and over, followed by a certain number of asterisks, each line having one more asterisk than the previous.
 
@@ -223,7 +225,8 @@ Finally, to start our program, we apply to <loop> the function ^h``$h$hi (i.e. `
   `k``s``s`ksk`k.*
 
 (Concerning indentation: the idea is that, if we insert a line break between an expression F and an expression G to which F is applied, then we start G on the same column as F; furthermore, we then always insert a line break after G.)
-How can I represent numbers in Unlambda?
+
+### How can I represent numbers in Unlambda?
 
 There are many ways to do that. In the previous example, we have (implicitly) represented the integer n by the function that acts like the identity but with the side effect of printing n asterisks. Such a representation is fine for adding integers (just compose the functions, i.e. the addition function is ^m^n^x`$m`$n$x), but you won't be able to multiply them for example.
 
@@ -262,7 +265,9 @@ To decrement (and hence to substract) Church integers is by no means impossible.
     The substraction function can be built from the <dec> function. I won't even write it because it's too ugly.
 
 Note that the Church integers are by no means the only way to represent integers in Unlambda. Essentially, there are two paths: you can either use a representation which is particular to your problem at hand (as we did above) and which is not completely general, or you can use a universal representation, i.e. one which can be transformed into the Church integers and vice versa (and which differs only by questions of convenience). An example of a non-universal representation is: representing n by a function that prints n asterisks. An example of a universal representation is: representing n by a list of length n, or representing n by a function which evaluates its argument applied to i n times.
-How can I represent lists (and related data structures) in Unlambda?
+
+
+### How can I represent lists (and related data structures) in Unlambda?
 
 We discuss how to create two types: products (i.e. pairs) and unions.
 
@@ -279,7 +284,8 @@ A union type is one which is capable of retaining one of two cases, with one dat
     The <switch> function (takes a union and two functions and applies the first one to the union's data in the first case, the second one in the second case) is ^q^f^g``$q$f$g, i.e. i.
 
 What you can do with these types is up to your imagination. A list might be created as a chain of pairs, for example. There is a little difficulty at the end of the list (to represent the empty list, that is). The obvious way around it is to represent a list by a union type, where the first case represents the empty list and the second case represents a pair of the first element and the rest of the list. This works but it is long. Another solution is use v for the empty list: this is more practical for some operations (essentially, because it is shorter), and less for others (essentially because v is a bit tricky to detect, and requires call/cc for that).
-How do I write tests and booleans in Unlambda?
+
+### How do I write tests and booleans in Unlambda?
 
 A pair of boolean values is a pair of Unlambda functions used (arbitrarily) to represent “true” and “false”. The essential thing is that they be universal, i.e. there should exist an <ifthenelse> function which takes three arguments: if the first is the boolean <true> then it returns the second, if the first is the boolean <false> then it returns the third.
 
@@ -290,7 +296,7 @@ Many pairs of functions can be used to represent booleans. Here are a few sugges
     ^x^y`$x$y (i.e. i) and ^y^x`$y$x (i.e. ``s`k`sik). Then the <ifthenelse> is ^b``$b`kk`k`ki, i.e. ``s``si`k`kk`k`k`ki.
     i and `ki: these are the two first Church integers. The <ifthenelse> function is then ^b``$b`kk`ki, i.e. ``s``si`k`kk`k`ki.
 
-A note about the Unlambda Quine Contest
+## A note about the Unlambda Quine Contest
 
 Recall that a quine is a program that prints its own listing. By the fixed point theorems in logic, such a program exists in any Turing-complete language in which printing an arbitrary string is possible (by a computable program of the string — a technical criterion which is satisfied in all programming languages in existence). Although the fixed point theorem is constructive (and thus actually algorithmically produces a quine), actually writing down the program can be difficult. See my quine page and my personal collection of quines for examples of quines in (ordinary, non obfuscated) programming languages.
 
@@ -318,7 +324,9 @@ One question which is yet open, however, is how difficult it is to write an Unla
 Basically, any functional language interpreter is centered, as explained in the Wizard Book, on the so-called eval/apply cycle, with two functions, eval and apply, calling each other recursively. Eval takes an expression of the language and evaluates it (i.e. executes it), whereas apply takes a function (already evaluated) and some arguments, and applies the former to the latter. Eval calls on apply to evaluate applications (what in Unlambda we write `FG), and apply calls on eval to evaluate the body of a function (in Unlambda, we can argue that functions don't have bodies, but still, when apply is told, for example, to apply s to three arguments X, Y and Z, it calls eval on ``XZ`YZ).
 
 So, the basic Unlambda interpreter (forgetting about d for the moment), written in a sufficently high-level language is very simple: eval evaluates all the builtins to themselves and calls apply to evaluate applications; in turn, apply makes ``kXY into X and ```sXYZ into ``XZ`YZ (which is again fed to eval). Certain features of Unlambda, or unfeatures of the meta language, will complicate the evaluator.
-First-class functions
+
+
+## First-class functions
 
 Unlambda has first-class functions. In my sketchy description above, I've simply omitted the important fact that an Unlambda function can be something like `sX (a “partially applied” s).
 
@@ -329,7 +337,8 @@ Rather than using first-class functions of the underlying language to represent 
 Furthermore, if the underlying language (say, CAML) has first-class functions and is tail-recursive, then, even if it does not have first-class continuations, the difficulties we have with implementing the continuations of Unlambda are greatly alleviated. Indeed, we can then rewrite the interpreter in Continuation Passing Style (see below) and represent the (passed) continuations as functions of the underlying language, which get called in a tail-recursive manner.
 
 If the underlying language does not have first-class functions, then they must be emulated by means of data structures (indeed, the only “variable” part in a first-class function is its closure, and that can be represented by a data structure, since the code is always the same). This is more or less clear in the Java version of the Unlambda interpreter (Java does not have first-class functions, so we use classes and methods instead, as we are supposed to).
-First-class continuations
+
+## First-class continuations
 
 Continuations are the major pain for implementing Unlambda when the underlying language does not have them. I refer to my call/cc page (hoping for it to be finished some day) for a more detailed discussion on first-class continuations.
 

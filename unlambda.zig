@@ -29,7 +29,7 @@ pub const Func = union(enum) {
 
     /// call with current continuation
     c,
-    _cont: usize,
+    _cont: *Func,
 
     /// print a char to stdout.
     print: u8,
@@ -134,22 +134,29 @@ pub const Runtime = struct {
         return self.memory.items[n];
     }
 
-    fn _interpret(self: *Runtime, n: Func.Id) Func {
-        // std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
+    fn _interpret(self: *Runtime, n: Func.Id) error{OutOfMemory}!Func {
+        std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
         const x = self.get(n);
 
         switch (x) {
             .apply => |fg| {
                 const f = self.get(fg[0]);
-                return self.call(f, fg[1]);
+                return self.call(f, fg[1]) catch |err| switch (err) {
+                    error.Interrupted => {
+                        @panic("congrats you managed to break my interpreter, with a cont that escape its c");
+                    },
+                    inline else => |e| e,
+                };
             },
             else => std.debug.panic("malformed unlambda code: unexpected {} at {}", .{ x, n }),
         }
     }
 
-    pub fn call(self: *Runtime, f: Func, g_id: Func.Id) Func {
+    pub const CallError = error{ OutOfMemory, Interrupted };
+
+    pub fn call(self: *Runtime, f: Func, g_id: Func.Id) CallError!Func {
         const g = self.get(g_id);
-        // std.log.warn("call({}, {})", .{ f, g });
+        std.log.warn("call({}, {})", .{ f, g });
         return switch (f) {
             .i => g,
             .print => |char| {
@@ -171,15 +178,27 @@ pub const Runtime = struct {
                 // The Unlambda one pager suggest using reference counting,
                 // since it's not possible to create cycles.
                 // TODO: implement RC and a free list.
-                const f0 = self.call(self.get(xy[0]), g_id);
+                var f0 = try self.call(self.get(xy[0]), g_id);
                 if (f0 == .d) {
                     const delayed: Func = .{ .apply = .{ xy[1], g_id } };
                     const n_delayed = self.push(delayed) catch unreachable; // TODO: propagate oom
                     return .{ ._d1 = n_delayed };
                 }
-                const g0 = self.call(self.get(xy[1]), g_id);
+
+                const g0 = try self.call(self.get(xy[1]), g_id);
                 const g0_id = self.push(g0) catch unreachable; // TODO: propagate oom
-                return self.call(f0, g0_id);
+
+                if (f0 == .c) {
+                    f0 = .{ ._cont = &f0 };
+                    const old_f0 = f0;
+                    return self.call(f0, g_id) catch |err| switch (err) {
+                        // Check if _cont was called.
+                        error.Interrupted => if (f0 == ._cont and f0._cont == old_f0._cont) err else try self.call(f0, g_id),
+                        else => return err,
+                    };
+                }
+
+                return try self.call(f0, g0_id);
             },
             .v => .v,
             .d => .{ ._d1 = g_id },
@@ -188,13 +207,24 @@ pub const Runtime = struct {
                 const f0 = self.get(f0_id);
                 return self.call(f0, g_id);
             },
-            // TODO
-            .c => g,
-            ._cont => g,
+            .c => .c,
+            ._cont => |res| {
+                res.* = g;
+                return error.Interrupted;
+            },
             .apply => |fg| {
                 // We need to resolve this apply to be able to call it.
-                const f0 = self.call(self.get(fg[0]), fg[1]);
-                return self.call(f0, g_id);
+                var f0 = try self.call(self.get(fg[0]), fg[1]);
+                if (f0 == .c) {
+                    f0 = .{ ._cont = &f0 };
+                    const old_f0 = f0;
+                    return self.call(f0, g_id) catch |err| switch (err) {
+                        // Check if _cont was called.
+                        error.Interrupted => if (f0 == ._cont and f0._cont == old_f0._cont) err else try self.call(f0, g_id),
+                        else => return err,
+                    };
+                }
+                return try self.call(f0, g_id);
             },
         };
     }
@@ -220,7 +250,7 @@ fn testCodeOutput(code: []const u8, expected: []const u8) !void {
 
     var runtime: Runtime = .{ .memory = bytecode, .stdout = undefined };
 
-    _ = runtime._interpret(0);
+    _ = try runtime._interpret(0);
     try std.testing.expectEqualStrings(expected, runtime.output.constSlice());
 }
 
@@ -257,7 +287,7 @@ test "print" {
     try testCodeOutput("`.*v", "*");
 }
 
-test "delayed" {
+test d {
     // `d`ri -> create a delayed
     try testCodeOutput("`d`ri", "");
     try testOutputEql("", &.{ .{ .apply = .{ 1, 2 } }, d, .{ .apply = .{ 3, 4 } }, r, i });
@@ -289,9 +319,14 @@ fn testFn(code: []const u8, in_outs: []const [2]Func) !void {
     }
 }
 
+fn testFnIsId(code: []const u8) !void {
+    const in_outs = [_][2]Func{ .{ v, v }, .{ p('*'), p('*') }, .{ i, i }, .{ d, d }, .{ c, c } };
+    return testFn(code, &in_outs);
+}
+
 test s {
     // ``skk is the identity
-    try testFn("``skk", &.{ .{ v, v }, .{ p('*'), p('*') } });
+    try testFnIsId("``skk");
 }
 
 pub fn main() !void {
@@ -316,4 +351,6 @@ pub fn main() !void {
 
 test c {
     try testCodeOutput("``cir", "\n");
+    try testCodeOutput("`c``s`kr``si`ki", "");
+    try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
 }
