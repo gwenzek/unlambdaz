@@ -28,9 +28,8 @@ pub const Func = union(enum) {
     _d1: Id,
 
     /// call with current continuation
-    // TODO
-    // c,
-    // _cont: Id,
+    c,
+    _cont: usize,
 
     /// print a char to stdout.
     print: u8,
@@ -43,11 +42,12 @@ pub const i: Func = .i;
 pub const k: Func = .k;
 pub const s: Func = .s;
 pub const v: Func = .v;
-pub const d: Func = .d;
 pub const r: Func = .{ .print = '\n' };
+pub const d: Func = .d;
+pub const c: Func = .c;
 
-pub fn p(c: u8) Func {
-    return .{ .print = c };
+pub fn p(char: u8) Func {
+    return .{ .print = char };
 }
 
 pub fn parse(out: *std.ArrayList(Func), code: []const u8) error{ OutOfMemory, Invalid }!void {
@@ -82,7 +82,7 @@ pub fn _parse(out: *std.ArrayList(Func), code: []const u8, pos: usize) error{ Ou
             out.items[n - 1] = .{ .apply = .{ n, m } };
             return remaining2;
         },
-        inline 'd', 'i', 's', 'k', 'v' => |name| {
+        inline 'd', 'i', 's', 'k', 'v', 'c' => |name| {
             const f = @unionInit(Func, &.{name}, {});
             try out.append(f);
             return pos + 1;
@@ -98,7 +98,7 @@ pub fn _parse(out: *std.ArrayList(Func), code: []const u8, pos: usize) error{ Ou
         // skip whitespaces
         ' ', '\n', '\t' => _parse(out, code, pos + 1),
         // TODO comments #...
-        else => |c| std.debug.panic("Invalide unlambda code. unexpected char {d}", .{c}),
+        else => |char| std.debug.panic("Invalide unlambda code. unexpected char {d}", .{char}),
     };
 }
 
@@ -152,11 +152,11 @@ pub const Runtime = struct {
         // std.log.warn("call({}, {})", .{ f, g });
         return switch (f) {
             .i => g,
-            .print => |c| {
+            .print => |char| {
                 if (builtin.is_test) {
-                    self.output.appendAssumeCapacity(c);
+                    self.output.appendAssumeCapacity(char);
                 } else {
-                    std.debug.print("{s}", .{&[1]u8{c}});
+                    std.debug.print("{s}", .{&[1]u8{char}});
                 }
                 return g;
             },
@@ -188,6 +188,9 @@ pub const Runtime = struct {
                 const f0 = self.get(f0_id);
                 return self.call(f0, g_id);
             },
+            // TODO
+            .c => g,
+            ._cont => g,
             .apply => |fg| {
                 // We need to resolve this apply to be able to call it.
                 const f0 = self.call(self.get(fg[0]), fg[1]);
@@ -221,7 +224,7 @@ fn testCodeOutput(code: []const u8, expected: []const u8) !void {
     try std.testing.expectEqualStrings(expected, runtime.output.constSlice());
 }
 
-test "parse" {
+test parse {
     var bytecode = std.ArrayList(Func).init(std.testing.allocator);
     defer bytecode.deinit();
 
@@ -240,6 +243,11 @@ test "parse" {
         bytecode.clearRetainingCapacity();
         try parse(&bytecode, "``d`.*ii ");
         try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, p('*'), i, i }, bytecode.items);
+    }
+    {
+        bytecode.clearRetainingCapacity();
+        try parse(&bytecode, "``cir");
+        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 4 } }, .{ .apply = .{ 2, 3 } }, c, i, r }, bytecode.items);
     }
 }
 
@@ -304,4 +312,8 @@ pub fn main() !void {
         .stdout = std.io.getStdOut(),
     };
     _ = try runtime.interpret(&.{});
+}
+
+test c {
+    try testCodeOutput("``cir", "\n");
 }
