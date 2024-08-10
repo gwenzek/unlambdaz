@@ -58,7 +58,7 @@ pub fn parse(out: *std.ArrayList(Func), code: []const u8) error{ OutOfMemory, In
             ' ', '\n', '\t' => n += 1,
             // TODO accept trailing comments
             else => {
-                log.err("Invalide unlambda code. Trailing code at pos {d}: {s}|{s} ({d})", .{ n, code[0..n], code[n..], code.len });
+                log.warn("Invalide unlambda code. Trailing code at pos {d}: {s}|{s} ({d})", .{ n, code[0..n], code[n..], code.len });
                 return error.Invalid;
             },
         }
@@ -67,7 +67,7 @@ pub fn parse(out: *std.ArrayList(Func), code: []const u8) error{ OutOfMemory, In
 
 pub fn _parse(out: *std.ArrayList(Func), code: []const u8, pos: usize) error{ OutOfMemory, Invalid }!usize {
     if (pos >= code.len) {
-        log.err("unexpected end of code", .{});
+        log.warn("unexpected end of code", .{});
         return error.Invalid;
     }
 
@@ -98,8 +98,46 @@ pub fn _parse(out: *std.ArrayList(Func), code: []const u8, pos: usize) error{ Ou
         // skip whitespaces
         ' ', '\n', '\t' => _parse(out, code, pos + 1),
         // TODO comments #...
-        else => |char| std.debug.panic("Invalide unlambda code. unexpected char {d}", .{char}),
+        else => |char| {
+            log.warn("Invalide unlambda code. unexpected char {d} at pos {d}", .{ char, pos });
+            return error.Invalid;
+        },
     };
+}
+
+test parse {
+    var bytecode = std.ArrayList(Func).init(std.testing.allocator);
+    defer bytecode.deinit();
+
+    {
+        bytecode.clearRetainingCapacity();
+        try parse(&bytecode, "`.*v");
+        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 2 } }, p('*'), v }, bytecode.items);
+    }
+
+    {
+        bytecode.clearRetainingCapacity();
+        try parse(&bytecode, "`d`.*i");
+        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 2 } }, d, .{ .apply = .{ 3, 4 } }, p('*'), i }, bytecode.items);
+    }
+    {
+        bytecode.clearRetainingCapacity();
+        try parse(&bytecode, "``d`.*ii ");
+        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, p('*'), i, i }, bytecode.items);
+    }
+    {
+        bytecode.clearRetainingCapacity();
+        try parse(&bytecode, "``cir");
+        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 4 } }, .{ .apply = .{ 2, 3 } }, c, i, r }, bytecode.items);
+    }
+}
+
+test "fuzz parser" {
+    // Fuzzing only works on linux atm, so I didn't test it's working correctly.
+    const input_bytes = std.testing.fuzzInput(.{});
+    var out = std.ArrayList(Func).init(std.testing.allocator);
+    defer out.deinit();
+    parse(&out, input_bytes) catch {};
 }
 
 pub const Runtime = struct {
@@ -112,9 +150,6 @@ pub const Runtime = struct {
             .memory = std.ArrayList(Func).init(allocator),
             .stdout = std.io.getStdOut(),
         };
-
-        // const well_known_funcs = [_]Func{ i, k, s, v, d };
-        // try res.memory.appendSlice(&well_known_funcs);
         return res;
     }
 
@@ -135,7 +170,7 @@ pub const Runtime = struct {
     }
 
     fn _interpret(self: *Runtime, n: Func.Id) error{OutOfMemory}!Func {
-        std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
+        // std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
         const x = self.get(n);
 
         switch (x) {
@@ -156,11 +191,16 @@ pub const Runtime = struct {
 
     pub fn call(self: *Runtime, f: Func, g_id: Func.Id) CallError!Func {
         const g = self.get(g_id);
-        std.log.warn("call({}, {})", .{ f, g });
+        // std.log.warn("call({}, {})", .{ f, g });
         return switch (f) {
             .i => g,
             .print => |char| {
                 if (builtin.is_test) {
+                    if (self.output.len < self.output.capacity()) {
+                        // If test output is too long, we drop trailing bytes.
+                        // This prevent the fuzzer to be limited by IO.
+                        self.output.resize(0) catch unreachable;
+                    }
                     self.output.appendAssumeCapacity(char);
                 } else {
                     std.debug.print("{s}", .{&[1]u8{char}});
@@ -254,33 +294,6 @@ fn testCodeOutput(code: []const u8, expected: []const u8) !void {
     try std.testing.expectEqualStrings(expected, runtime.output.constSlice());
 }
 
-test parse {
-    var bytecode = std.ArrayList(Func).init(std.testing.allocator);
-    defer bytecode.deinit();
-
-    {
-        bytecode.clearRetainingCapacity();
-        try parse(&bytecode, "`.*v");
-        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 2 } }, p('*'), v }, bytecode.items);
-    }
-
-    {
-        bytecode.clearRetainingCapacity();
-        try parse(&bytecode, "`d`.*i");
-        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 2 } }, d, .{ .apply = .{ 3, 4 } }, p('*'), i }, bytecode.items);
-    }
-    {
-        bytecode.clearRetainingCapacity();
-        try parse(&bytecode, "``d`.*ii ");
-        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 6 } }, .{ .apply = .{ 2, 3 } }, d, .{ .apply = .{ 4, 5 } }, p('*'), i, i }, bytecode.items);
-    }
-    {
-        bytecode.clearRetainingCapacity();
-        try parse(&bytecode, "``cir");
-        try std.testing.expectEqualSlices(Func, &.{ .{ .apply = .{ 1, 4 } }, .{ .apply = .{ 2, 3 } }, c, i, r }, bytecode.items);
-    }
-}
-
 test "print" {
     // `.*v -> print *
     try testOutputEql("*", &.{ .{ .apply = .{ 1, 2 } }, p('*'), v });
@@ -329,6 +342,12 @@ test s {
     try testFnIsId("``skk");
 }
 
+test c {
+    try testCodeOutput("``cir", "\n");
+    try testCodeOutput("`c``s`kr``si`ki", "");
+    try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
+}
+
 pub fn main() !void {
     const fib =
         \\
@@ -347,10 +366,4 @@ pub fn main() !void {
         .stdout = std.io.getStdOut(),
     };
     _ = try runtime.interpret(&.{});
-}
-
-test c {
-    try testCodeOutput("``cir", "\n");
-    try testCodeOutput("`c``s`kr``si`ki", "");
-    try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
 }
