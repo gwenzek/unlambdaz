@@ -36,6 +36,32 @@ pub const Func = union(enum) {
     // TODO @, ?*, | to read stdin
 
     // TODO e
+
+    pub fn format(
+        self: Func,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        switch (self) {
+            .i, .k, .s, .v, .d, .c => _ = try writer.write(@tagName(self)),
+            .apply => |fg| try writer.print("`({d},{d})", .{ fg[0], fg[1] }),
+            ._k1 => |f| try writer.print("k1({d})", .{f}),
+            ._d1 => |f| try writer.print("d1({d})", .{f}),
+            ._s1 => |f| try writer.print("s1({d})", .{f}),
+            ._s2 => |fg| try writer.print("s2({d},{d})", .{ fg[0], fg[1] }),
+            ._cont => |ptr| try writer.print("cont(0x{x})", .{@intFromPtr(ptr)}),
+            .print => |char| {
+                if (char == '\n') {
+                    _ = try writer.write("r");
+                } else {
+                    try writer.print(".{s}", .{[1]u8{char}});
+                }
+            },
+        }
+    }
 };
 
 pub const i: Func = .i;
@@ -135,9 +161,56 @@ test parse {
 test "fuzz parser" {
     // Fuzzing only works on linux atm, so I didn't test it's working correctly.
     const input_bytes = std.testing.fuzzInput(.{});
-    var out = std.ArrayList(Func).init(std.testing.allocator);
-    defer out.deinit();
-    parse(&out, input_bytes) catch {};
+
+    var code = std.ArrayList(u8).init(std.testing.allocator);
+    try fuzzingCodeGenerator(&code, input_bytes);
+    defer code.deinit();
+
+    var runtime: Runtime = .{ .memory = std.ArrayList(Func).init(std.testing.allocator), .stdout = undefined };
+    defer runtime.deinit();
+    parse(&runtime.memory, code.items) catch {
+        return;
+    };
+
+    std.log.warn("interpreting {s}", .{code.items});
+    _ = try runtime._interpret(0);
+}
+
+fn fuzzingCodeGenerator(code: *std.ArrayList(u8), input_bytes: []const u8) !void {
+    const valid_chars = "iksvrdc";
+    return switch (input_bytes.len) {
+        0 => {},
+        1 => try code.append(valid_chars[input_bytes.len % valid_chars.len]),
+        2 => {
+            try code.append(valid_chars[input_bytes[0] % valid_chars.len]);
+            try code.append(valid_chars[input_bytes[1] % valid_chars.len]);
+            return;
+        },
+        else => {
+            const b = input_bytes[0];
+            try code.append('`');
+            var ratio: f32 = @floatFromInt(@divTrunc(b, 8));
+            ratio /= (254.0 / 8.0);
+            ratio *= @floatFromInt(input_bytes.len);
+            const left: usize = @intFromFloat(@max(1.0, ratio));
+            try fuzzingCodeGenerator(code, input_bytes[0..left]);
+            try fuzzingCodeGenerator(code, input_bytes[left..]);
+        },
+    };
+}
+
+test fuzzingCodeGenerator {
+    var code = std.ArrayList(u8).init(std.testing.allocator);
+    try fuzzingCodeGenerator(&code, "hello world");
+    defer code.deinit();
+
+    var runtime: Runtime = .{ .memory = std.ArrayList(Func).init(std.testing.allocator), .stdout = undefined };
+    defer runtime.deinit();
+    parse(&runtime.memory, code.items) catch {
+        return;
+    };
+
+    _ = try runtime._interpret(0);
 }
 
 pub const Runtime = struct {
@@ -170,7 +243,7 @@ pub const Runtime = struct {
     }
 
     fn _interpret(self: *Runtime, n: Func.Id) error{OutOfMemory}!Func {
-        // std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
+        std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
         const x = self.get(n);
 
         switch (x) {
@@ -191,7 +264,7 @@ pub const Runtime = struct {
 
     pub fn call(self: *Runtime, f: Func, g_id: Func.Id) CallError!Func {
         const g = self.get(g_id);
-        // std.log.warn("call({}, {})", .{ f, g });
+        std.log.warn("call({}, {})", .{ f, g });
         return switch (f) {
             .i => g,
             .print => |char| {
@@ -348,9 +421,13 @@ test c {
     try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
 }
 
+test "hard test cases found by fuzzer" {
+    // try testCodeOutput("``c`v`vv``c`ri`c`s`vs", "\n");
+    try testCodeOutput("``c`ri `ci", "\n");
+}
+
 pub fn main() !void {
     const fib =
-        \\
         \\ ```s``s``sii`ki
         \\   `k.*``s``s`ks
         \\   ``s`k`s`ks``s``s`ks``s`k`s`kr``s`k`sikk
