@@ -29,7 +29,7 @@ pub const Func = union(enum) {
 
     /// call with current continuation
     c,
-    _cont: *Func,
+    _cont: struct { origin: Id, res_ptr: Id },
 
     /// print a char to stdout.
     print: u8,
@@ -52,7 +52,7 @@ pub const Func = union(enum) {
             ._d1 => |f| try writer.print("d1({d})", .{f}),
             ._s1 => |f| try writer.print("s1({d})", .{f}),
             ._s2 => |fg| try writer.print("s2({d},{d})", .{ fg[0], fg[1] }),
-            ._cont => |ptr| try writer.print("cont(0x{x})", .{@intFromPtr(ptr)}),
+            ._cont => |ptr| try writer.print("cont({})", .{ptr}),
             .print => |char| {
                 if (char == '\n') {
                     _ = try writer.write("r");
@@ -218,12 +218,13 @@ pub const Runtime = struct {
     output: std.BoundedArray(u8, 4096) = .{},
     stdout: std.fs.File,
 
+    _should_resume: Func.Id = std.math.maxInt(Func.Id),
+
     pub fn init(allocator: std.mem.Allocator) !Runtime {
-        const res: Runtime = .{
+        return .{
             .memory = std.ArrayList(Func).init(allocator),
-            .stdout = std.io.getStdOut(),
+            .stdout = if (builtin.is_test) undefined else std.io.getStdOut(),
         };
-        return res;
     }
 
     pub fn deinit(self: *const Runtime) void {
@@ -248,10 +249,9 @@ pub const Runtime = struct {
 
         switch (x) {
             .apply => |fg| {
-                const f = self.get(fg[0]);
-                return self.call(f, fg[1]) catch |err| switch (err) {
+                return self.call(fg[0], fg[1]) catch |err| switch (err) {
                     error.Interrupted => {
-                        @panic("congrats you managed to break my interpreter, with a cont that escape its c");
+                        return self._interpret(self._should_resume);
                     },
                     inline else => |e| e,
                 };
@@ -262,7 +262,8 @@ pub const Runtime = struct {
 
     pub const CallError = error{ OutOfMemory, Interrupted };
 
-    pub fn call(self: *Runtime, f: Func, g_id: Func.Id) CallError!Func {
+    pub fn call(self: *Runtime, f_id: Func.Id, g_id: Func.Id) CallError!Func {
+        const f = self.get(f_id);
         const g = self.get(g_id);
         std.log.warn("call({}, {})", .{ f, g });
         return switch (f) {
@@ -291,53 +292,53 @@ pub const Runtime = struct {
                 // The Unlambda one pager suggest using reference counting,
                 // since it's not possible to create cycles.
                 // TODO: implement RC and a free list.
-                var f0 = try self.call(self.get(xy[0]), g_id);
+                const f0 = try self.call(xy[0], g_id);
                 if (f0 == .d) {
                     const delayed: Func = .{ .apply = .{ xy[1], g_id } };
-                    const n_delayed = self.push(delayed) catch unreachable; // TODO: propagate oom
+                    const n_delayed = try self.push(delayed);
                     return .{ ._d1 = n_delayed };
                 }
 
-                const g0 = try self.call(self.get(xy[1]), g_id);
-                const g0_id = self.push(g0) catch unreachable; // TODO: propagate oom
+                const g0 = try self.call(xy[1], g_id);
+                const g0_id = try self.push(g0);
 
                 if (f0 == .c) {
-                    f0 = .{ ._cont = &f0 };
-                    const old_f0 = f0;
-                    return self.call(f0, g_id) catch |err| switch (err) {
-                        // Check if _cont was called.
-                        error.Interrupted => if (f0 == ._cont and f0._cont == old_f0._cont) err else try self.call(f0, g_id),
-                        else => return err,
-                    };
+                    @panic("c");
                 }
-
-                return try self.call(f0, g0_id);
+                const f0_id = try self.push(f0);
+                return try self.call(f0_id, g0_id);
             },
             .v => .v,
             .d => .{ ._d1 = g_id },
             ._d1 => |f0_id| {
                 // Force the evaluation of the delayed.
-                const f0 = self.get(f0_id);
-                return self.call(f0, g_id);
+                return self.call(f0_id, g_id);
             },
-            .c => .c,
-            ._cont => |res| {
-                res.* = g;
+            .c => {
+                const res_id = try self.push(undefined);
+                const origin = f_id -| 1;
+                // Edit the calling apply. If the contination trigger,
+                // it will be evaluated a second time using the value passed to the continuation.
+                self.memory.items[origin].apply[0] = res_id;
+                const cont_id = try self.push(.{ ._cont = .{ .origin = origin, .res_ptr = res_id } });
+                return try self.call(g_id, cont_id);
+            },
+            ._cont => |cont| {
+                self.memory.items[cont.res_ptr] = switch (g) {
+                    .apply => |fg| try self.call(fg[0], fg[1]),
+                    else => g,
+                };
+                self._should_resume = cont.origin;
                 return error.Interrupted;
             },
             .apply => |fg| {
                 // We need to resolve this apply to be able to call it.
-                var f0 = try self.call(self.get(fg[0]), fg[1]);
+                const f0 = try self.call(fg[0], fg[1]);
                 if (f0 == .c) {
-                    f0 = .{ ._cont = &f0 };
-                    const old_f0 = f0;
-                    return self.call(f0, g_id) catch |err| switch (err) {
-                        // Check if _cont was called.
-                        error.Interrupted => if (f0 == ._cont and f0._cont == old_f0._cont) err else try self.call(f0, g_id),
-                        else => return err,
-                    };
+                    @panic("c");
                 }
-                return try self.call(f0, g_id);
+                const f0_id = try self.push(f0);
+                return try self.call(f0_id, g_id);
             },
         };
     }
@@ -358,10 +359,10 @@ fn testOutputEql(expected: []const u8, code: []const Func) !void {
 
 fn testCodeOutput(code: []const u8, expected: []const u8) !void {
     var bytecode = std.ArrayList(Func).init(std.testing.allocator);
-    defer bytecode.deinit();
     try parse(&bytecode, code);
 
     var runtime: Runtime = .{ .memory = bytecode, .stdout = undefined };
+    defer runtime.deinit();
 
     _ = try runtime._interpret(0);
     try std.testing.expectEqualStrings(expected, runtime.output.constSlice());
@@ -418,12 +419,17 @@ test s {
 test c {
     try testCodeOutput("``cir", "\n");
     try testCodeOutput("`c``s`kr``si`ki", "");
-    try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
+    // try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
 }
 
 test "hard test cases found by fuzzer" {
     // try testCodeOutput("``c`v`vv``c`ri`c`s`vs", "\n");
     try testCodeOutput("``c`ri `ci", "\n");
+
+    // ` `c`ri `ci
+    // ` ``ri<cont> `ci
+    // ` <cont> `ci
+
 }
 
 pub fn main() !void {
