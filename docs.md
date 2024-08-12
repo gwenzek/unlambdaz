@@ -170,16 +170,19 @@ If F does not involve x but does involve evaluations which might (or do) cause s
 Another shortcut in abstraction elimination is to spot expressions such as ^x`F$x and to rewrite them as simply F — provided of course the variable $x does not appear in F. This is pretty benign if F is just a builtin other than D, or a variable other than $x. But if F can produce side effects, this presents the same risks as the other shortcut we just described (and you can also get around them by writing `dF).
 
 Note also that the V builtin can always be abstracted to itself. (That is, `kv is functionally identical to v.)
-More Unlambda builtins
-v
+
+## More Unlambda builtins
+## v
 
 The v function is a kind of “black hole”. It takes an argument, ignores it and returns v. It can be used to swallow any number of arguments.
 
 The v function can be implemented using s, k and i (and hence, using s and k only). Indeed, it can be written using the lambda expression `^h^x`$h$h^h^x`$h$h (which evaluates to ^x of the same thing), and abstraction elimination shows that this is ` ``s``s`kskk ``s``s`kskk (here is an example when some incorrect shortcuts in an abstraction elimination can be disastrous, for example if ` ``s`kk``sii ``s`kk``sii were used instead, as obtained by attempting to reduce ^h^x`$h$h as ^h`k`$h$h).
-.x
+
+## .x
 
 The .x function is the only way to perform output in Unlambda (note that in Unlambda version 1 there is no way to perform input). This function takes an argument and, like the identity function, returns it unchanged. Only contrary to the identity function it has a side effect, namely to print the character x on the standard output (this writing takes place when .x is applied). Note that while this function is written with two characters, it is still one function; on no account should .x be thought of as something applied to x (and, just to insist, there is no such function as . (dot), only .x (dot x)). The r function is just one instance of the .x function, namely when x is the newline character. Thus, the `ri program has the effect of printing a newline (so would `rv or `rr or `r(anything), but r alone doesn't do it, because here the r function isn't applied: here my note about the impossibility of currying functions of zero arguments should become clearer).
-d
+
+## d
 
 The d function is an exception to the normal rules of evaluation (hence it should be called a special form rather than a function). When Unlambda is evaluating `FG and F evaluates to d (for example when F is d) then G is not evaluated. The result `dG is a promise to evaluate G: that is, G is kept unevaluated until the promise is itself applied to an expression H. When that happens, G is finally evaluated (after H is), and it is applied to H. This is called forcing the promise.
 

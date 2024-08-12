@@ -218,9 +218,11 @@ pub const Runtime = struct {
     output: std.BoundedArray(u8, 4096) = .{},
     stdout: std.fs.File,
 
+    _call_graph: std.AutoHashMapUnmanaged(Func.Id, Progress) = .{},
     _should_resume: Func.Id = std.math.maxInt(Func.Id),
+    const Progress = struct { res: Func, caller: Func.Id };
 
-    pub fn init(allocator: std.mem.Allocator) !Runtime {
+    pub fn init(allocator: std.mem.Allocator) Runtime {
         return .{
             .memory = std.ArrayList(Func).init(allocator),
             .stdout = if (builtin.is_test) undefined else std.io.getStdOut(),
@@ -236,6 +238,7 @@ pub const Runtime = struct {
         if (self.get(0) != .apply) {
             @panic("malformed unlambda code. Should start with apply symbol '`'");
         }
+        std.log.warn("interpreting({any})", .{self.memory.items});
         return self._interpret(0);
     }
 
@@ -244,28 +247,41 @@ pub const Runtime = struct {
     }
 
     fn _interpret(self: *Runtime, n: Func.Id) error{OutOfMemory}!Func {
-        std.log.warn("interpreting({any}) at {d}", .{ self.memory.items, n });
-        const x = self.get(n);
-
-        switch (x) {
-            .apply => |fg| {
-                return self.call(fg[0], fg[1]) catch |err| switch (err) {
-                    error.Interrupted => {
-                        return self._interpret(self._should_resume);
-                    },
-                    inline else => |e| e,
-                };
-            },
-            else => std.debug.panic("malformed unlambda code: unexpected {} at {}", .{ x, n }),
+        var idx = n;
+        while (true) {
+            const x = self.get(idx);
+            switch (x) {
+                .apply => {
+                    return self.call(idx) catch |err| switch (err) {
+                        error.Interrupted => {
+                            std.log.warn("Continuation applied, resuming on {d}", .{self._should_resume});
+                            idx = self._should_resume;
+                            switch (self.get(idx)) {
+                                .apply => {},
+                                else => @panic("Invalid continuation"),
+                            }
+                            continue;
+                        },
+                        inline else => |e| e,
+                    };
+                },
+                else => return x,
+            }
         }
     }
 
     pub const CallError = error{ OutOfMemory, Interrupted };
 
-    pub fn call(self: *Runtime, f_id: Func.Id, g_id: Func.Id) CallError!Func {
+    pub fn pushCall(self: *Runtime, f_id: Func.Id, g_id: Func.Id) CallError!Func {
+        const a = try self.push(.{ .apply = .{ f_id, g_id } });
+        return try self.call(a);
+    }
+
+    pub fn call(self: *Runtime, apply_id: Func.Id) CallError!Func {
+        const f_id, const g_id = self.get(apply_id).apply;
         const f = self.get(f_id);
         const g = self.get(g_id);
-        std.log.warn("call({}, {})", .{ f, g });
+        std.log.warn("call@{}: {}, {}", .{ apply_id, f, g });
         return switch (f) {
             .i => g,
             .print => |char| {
@@ -292,53 +308,51 @@ pub const Runtime = struct {
                 // The Unlambda one pager suggest using reference counting,
                 // since it's not possible to create cycles.
                 // TODO: implement RC and a free list.
-                const f0 = try self.call(xy[0], g_id);
+                const f0 = try self.pushCall(xy[0], g_id);
                 if (f0 == .d) {
                     const delayed: Func = .{ .apply = .{ xy[1], g_id } };
                     const n_delayed = try self.push(delayed);
                     return .{ ._d1 = n_delayed };
                 }
 
-                const g0 = try self.call(xy[1], g_id);
+                const g0 = try self.pushCall(xy[1], g_id);
                 const g0_id = try self.push(g0);
 
-                if (f0 == .c) {
-                    @panic("c");
-                }
                 const f0_id = try self.push(f0);
-                return try self.call(f0_id, g0_id);
+                return try self.pushCall(f0_id, g0_id);
             },
-            .v => .v,
+            .v => {
+                _ = try self._interpret(g_id);
+                return v;
+            },
             .d => .{ ._d1 = g_id },
             ._d1 => |f0_id| {
                 // Force the evaluation of the delayed.
-                return self.call(f0_id, g_id);
+                return self.pushCall(f0_id, g_id);
             },
             .c => {
                 const res_id = try self.push(undefined);
-                const origin = f_id -| 1;
                 // Edit the calling apply. If the contination trigger,
                 // it will be evaluated a second time using the value passed to the continuation.
-                self.memory.items[origin].apply[0] = res_id;
-                const cont_id = try self.push(.{ ._cont = .{ .origin = origin, .res_ptr = res_id } });
-                return try self.call(g_id, cont_id);
+                self.memory.items[apply_id].apply[0] = undefined;
+                const cont_id = try self.push(.{ ._cont = .{ .origin = apply_id, .res_ptr = res_id } });
+                return try self.pushCall(g_id, cont_id);
             },
             ._cont => |cont| {
-                self.memory.items[cont.res_ptr] = switch (g) {
-                    .apply => |fg| try self.call(fg[0], fg[1]),
-                    else => g,
-                };
+                self.memory.items[cont.origin].apply[0] = cont.res_ptr;
+                self.memory.items[cont.res_ptr] = try self._interpret(g_id);
+                std.log.warn("calling cont {}({} aka {})", .{ cont, g, self.memory.items[cont.res_ptr] });
                 self._should_resume = cont.origin;
                 return error.Interrupted;
             },
-            .apply => |fg| {
+            .apply => {
                 // We need to resolve this apply to be able to call it.
-                const f0 = try self.call(fg[0], fg[1]);
+                const f0 = try self.call(f_id);
                 if (f0 == .c) {
                     @panic("c");
                 }
                 const f0_id = try self.push(f0);
-                return try self.call(f0_id, g_id);
+                return try self.pushCall(f0_id, g_id);
             },
         };
     }
@@ -347,10 +361,14 @@ pub const Runtime = struct {
         try self.memory.append(f);
         return @intCast(self.memory.items.len - 1);
     }
+
+    pub fn setCaller(self: *Runtime, caller: Func.Id, callee: Func.Id) !void {
+        try self._call_graph.put(self.memory.allocator, callee, .{ .caller = caller, .res = undefined });
+    }
 };
 
 fn testOutputEql(expected: []const u8, code: []const Func) !void {
-    var runtime = try Runtime.init(std.testing.allocator);
+    var runtime = Runtime.init(std.testing.allocator);
     defer runtime.deinit();
 
     _ = try runtime.interpret(code);
@@ -359,12 +377,13 @@ fn testOutputEql(expected: []const u8, code: []const Func) !void {
 
 fn testCodeOutput(code: []const u8, expected: []const u8) !void {
     var bytecode = std.ArrayList(Func).init(std.testing.allocator);
+    defer bytecode.deinit();
     try parse(&bytecode, code);
 
-    var runtime: Runtime = .{ .memory = bytecode, .stdout = undefined };
+    var runtime = Runtime.init(std.testing.allocator);
     defer runtime.deinit();
 
-    _ = try runtime._interpret(0);
+    _ = try runtime.interpret(bytecode.items);
     try std.testing.expectEqualStrings(expected, runtime.output.constSlice());
 }
 
@@ -419,16 +438,18 @@ test s {
 test c {
     try testCodeOutput("``cir", "\n");
     try testCodeOutput("`c``s`kr``si`ki", "");
+    try testCodeOutput("```s `ck ir", "\n\n");
+    // ```s `ck ir -> ` ``k<cont> `ir -> ` <cont> r -> ```s r i r -> ` `rr `ir ->
     // try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
 }
 
 test "hard test cases found by fuzzer" {
-    // try testCodeOutput("``c`v`vv``c`ri`c`s`vs", "\n");
+    try testCodeOutput("``c`v`vv``c`ri`c`s`vs", "\n");
     try testCodeOutput("``c`ri `ci", "\n");
 
-    // ` `c`ri `ci
-    // ` ``ri<cont> `ci
-    // ` <cont> `ci
+    // ` `cv ` `c `ri`c`s`vs
+    // ` v ` `c `ri `c  `sv
+    // ` v ` `c `ri ``sv<cont>
 
 }
 
