@@ -171,14 +171,14 @@ test "fuzz parser" {
     try fuzzingCodeGenerator(&code, input_bytes);
     defer code.deinit();
 
-    var runtime: Runtime = .{ .memory = std.ArrayList(Func).init(std.testing.allocator), .stdout = undefined };
+    var runtime = try Runtime.init(std.testing.allocator, &.{});
     defer runtime.deinit();
     parse(&runtime.memory, code.items) catch {
         return;
     };
 
     std.log.warn("interpreting {s}", .{code.items});
-    _ = try runtime._interpret(0);
+    _ = try runtime.interpret();
 }
 
 fn fuzzingCodeGenerator(code: *std.ArrayList(u8), input_bytes: []const u8) !void {
@@ -215,7 +215,7 @@ test fuzzingCodeGenerator {
         return;
     };
 
-    _ = try runtime._interpret(0);
+    _ = try runtime.interpret();
 }
 
 pub const Runtime = struct {
@@ -225,13 +225,15 @@ pub const Runtime = struct {
 
     _call_graph: std.AutoHashMapUnmanaged(Func.Id, Progress) = .{},
     _should_resume: Func.Id = std.math.maxInt(Func.Id),
-    const Progress = struct { res: ?Func = null, caller: Func.Id };
+    const Progress = struct { res: ?Func = null, caller: ?Func.Id };
 
-    pub fn init(allocator: std.mem.Allocator) Runtime {
-        return .{
+    pub fn init(allocator: std.mem.Allocator, code: []const Func) !Runtime {
+        var res = .{
             .memory = std.ArrayList(Func).init(allocator),
             .stdout = if (builtin.is_test) undefined else std.io.getStdOut(),
         };
+        try res.memory.appendSlice(code);
+        return res;
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -239,75 +241,76 @@ pub const Runtime = struct {
         self._call_graph.deinit(self.memory.allocator);
     }
 
-    pub fn interpret(self: *Runtime, code: []const Func) !Func {
-        try self.memory.appendSlice(code);
+    pub fn interpret(
+        self: *Runtime,
+    ) !Func {
         if (self.get(0) != .apply) {
             @panic("malformed unlambda code. Should start with apply symbol '`'");
         }
-        std.log.warn("interpreting({any})", .{self.memory.items});
         return self._interpret(0);
     }
 
+    pub fn _interpret(self: *Runtime, start_id: Func.Id) !Func {
+        std.log.warn("interpreting({any})", .{self.memory.items});
+        var continuation: ?Func.Id = null;
+        var id: Func.Id = start_id;
+        try self.setCaller(.{ .caller = null, .callee = start_id });
+        while (true) {
+            continuation = try self.apply(id);
+            if (continuation) |cont| {
+                id = cont;
+            } else break;
+        }
+        return self._call_graph.get(start_id).?.res.?;
+    }
+
+    /// Read memory at the given index.
     pub fn get(self: *const Runtime, n: Func.Id) Func {
         return self.memory.items[n];
     }
 
-    fn _interpret(self: *Runtime, n: Func.Id) error{OutOfMemory}!Func {
-        var idx = n;
-        var should_resume_caller: ?Func.Id = null;
-        while (true) {
-            const x = self.get(idx);
-            const y = switch (x) {
-                .apply => self.call(idx) catch |err| switch (err) {
-                    error.Interrupted => {
-                        std.log.warn("Continuation applied, resuming on {d}", .{self._should_resume});
-                        std.log.warn("Current memory: {any}", .{self.memory.items});
-                        idx = self._should_resume;
-                        switch (self.get(idx)) {
-                            .apply => {},
-                            else => @panic("Invalid continuation"),
-                        }
-                        if (self._call_graph.getPtr(idx)) |entry| {
-                            should_resume_caller = entry.*.caller;
-                            std.log.warn("Resuming caller {} from {}", .{ entry.*, idx });
-                            std.log.warn("Current memory: {any}", .{self.memory.items});
-                        }
-                        continue;
-                    },
-                    inline else => |e| return e,
-                },
-                else => x,
-            };
-            if (should_resume_caller) |caller| {
-                std.log.warn("Resuming caller {} from {}", .{ caller, idx });
-                idx = caller;
-                should_resume_caller = null;
-                std.log.warn("Current memory: {any}", .{self.memory.items});
-                continue;
-            } else {
-                return y;
-            }
-        }
+    /// Fetch the value at the given index, but returns null when it finds an apply.
+    pub fn isReady(self: *Runtime, id: Func.Id) ?Func {
+        return switch (self.get(id)) {
+            .apply => if (self._call_graph.get(id)) |progress| progress.res else null,
+            else => |x| x,
+        };
     }
 
-    pub const CallError = error{ OutOfMemory, Interrupted };
-
-    pub fn pushCall(self: *Runtime, caller_id: Func.Id, f_id: Func.Id, g_id: Func.Id) CallError!Func {
-        const a = try self.push(.{ .apply = .{ f_id, g_id } });
-        try self.setCaller(.{ .caller = caller_id, .callee = a });
-        return try self.call(a);
-    }
-
-    pub fn call(self: *Runtime, apply_id: Func.Id) CallError!Func {
+    pub fn apply(self: *Runtime, apply_id: Func.Id) error{OutOfMemory}!?Func.Id {
         const f_id, const g_id = self.get(apply_id).apply;
-        const f = self.get(f_id);
-        const g = self.get(g_id);
-        std.log.warn("call({}, {}={}, {}={})", .{ apply_id, f_id, f, g_id, g });
-        std.log.warn("Current memory: {any}", .{self.memory.items});
+        std.log.warn("apply({}, {}, {})", .{ apply_id, f_id, g_id });
+        const caller = if (self._call_graph.get(apply_id)) |progress| progress.caller else null;
+        if (self.isReady(apply_id)) |_| {
+            return caller;
+        }
+        if (self.isReady(f_id) == null) {
+            try self.setCaller(.{ .caller = apply_id, .callee = f_id });
+            return f_id;
+        }
+        const f = self.isReady(f_id).?;
+        if (f == .d) {
+            const res: Func = if (self.isReady(g_id)) |g| g else .{ ._d1 = g_id };
+            self.saveRes(apply_id, res);
+            return caller;
+        }
+        if (self.isReady(g_id) == null) {
+            try self.setCaller(.{ .caller = apply_id, .callee = g_id });
+            return g_id;
+        }
+        const g = self.isReady(g_id).?;
+        if (f == .c) {
+            // TODO: apply g to the continuation
+            self.saveRes(apply_id, g);
+            return caller;
+        }
 
-        return switch (f) {
+        std.log.warn("call({}: {}, {}: {})", .{ f_id, f, g_id, g });
+        const res: Func = switch (f) {
+            .c, .d => unreachable,
+            .apply => unreachable,
             .i => g,
-            .print => |char| {
+            .print => |char| print: {
                 if (builtin.is_test) {
                     if (self.output.len < self.output.capacity()) {
                         // If test output is too long, we drop trailing bytes.
@@ -318,24 +321,12 @@ pub const Runtime = struct {
                 } else {
                     std.debug.print("{s}", .{&[1]u8{char}});
                 }
-                return g;
+                break :print g;
             },
-            .k => {
-                const g_res = try self._interpret(g_id);
-                return .{ ._k1 = try self.push(g_res) };
-            },
-            ._k1 => |cst| {
-                _ = try self._interpret(g_id);
-                return self.get(cst);
-            },
-            .s => {
-                const g_res = try self._interpret(g_id);
-                return .{ ._s1 = try self.push(g_res) };
-            },
-            ._s1 => |x| {
-                const g_res = try self._interpret(g_id);
-                return .{ ._s2 = .{ x, try self.push(g_res) } };
-            },
+            .k => .{ ._k1 = g_id },
+            ._k1 => |cst| self.get(cst),
+            .s => .{ ._s1 = g_id },
+            ._s1 => |x| .{ ._s2 = .{ x, g_id } },
             ._s2 => |xy| {
                 // The substitution operator requires allocation.
                 // This is expected because 's' is what makes Unlambda Turing complete.
@@ -350,48 +341,40 @@ pub const Runtime = struct {
                 // So we do the expansion explicitly, then use the general interpret logic.
                 const x = try self.push(.{ .apply = .{ xy[0], g_id } });
                 const y = try self.push(.{ .apply = .{ xy[1], g_id } });
-                const z = try self.push(.{ .apply = .{ x, y } });
-                try self.setCaller(.{ .caller = apply_id, .callee = z });
-                return self._interpret(z);
+                // const z = try self.push(.{ .apply = .{ x, y } });
+                try self.setCaller(.{ .caller = apply_id, .callee = x });
+                try self.setCaller(.{ .caller = apply_id, .callee = y });
+                const old = self.memory.items[apply_id];
+                self.memory.items[apply_id].apply = .{ x, y };
+                std.log.warn("```s rewrote {}: {} to {}", .{ apply_id, old, self.memory.items[apply_id] });
+                return apply_id;
             },
-            .v => {
-                _ = try self._interpret(g_id);
-                return v;
-            },
-            .d => .{ ._d1 = g_id },
-            ._d1 => |f0_id| {
-                // Force the evaluation of the delayed.
-                return self.pushCall(apply_id, f0_id, g_id);
-            },
-            .c => |res_ptr| if (res_ptr) |c_id| {
-                // This is the second time we call this continuation.
-                // Let's read the result.
-                return self.get(c_id);
-            } else {
-                // allocate a slot to store it.
-                const res_id = try self.push(v);
-                self.memory.items[f_id].c = res_id;
-                const cont_id = try self.push(.{ ._cont = .{ .origin = apply_id, .res_ptr = res_id } });
-                return try self.pushCall(apply_id, g_id, cont_id);
+            .v => v,
+            // Force the evaluation of the delayed.
+            ._d1 => |delayed| blk: {
+                if (self.isReady(delayed)) |res| {
+                    break :blk res;
+                }
+                try self.setCaller(.{ .caller = apply_id, .callee = delayed });
+                return delayed;
             },
             ._cont => |cont| {
-                try self.setCaller(.{ .caller = apply_id, .callee = g_id });
-                self.memory.items[cont.res_ptr] = try self._interpret(g_id);
-                std.log.warn("calling cont {}({} aka {})", .{ cont, g, self.memory.items[cont.res_ptr] });
-                self._should_resume = cont.origin;
-                return error.Interrupted;
-            },
-            .apply => {
-                // We need to resolve this apply to be able to call it.
-                try self.setCaller(.{ .caller = apply_id, .callee = f_id });
-                const f0 = try self.call(f_id);
-                if (f0 == .c) {
-                    @panic("c");
-                }
-                const f0_id = try self.push(f0);
-                return try self.pushCall(apply_id, f0_id, g_id);
+                self.memory.items[cont.res_ptr] = g;
+                std.log.warn("calling cont {}({})", .{ cont, g });
+                return cont.origin;
             },
         };
+        self.saveRes(apply_id, res);
+        std.log.warn(" call -> {}", .{res});
+        return caller;
+    }
+
+    pub const CallError = error{ OutOfMemory, Interrupted };
+
+    pub fn pushCall(self: *Runtime, caller_id: Func.Id, f_id: Func.Id, g_id: Func.Id) CallError!Func {
+        const a = try self.push(.{ .apply = .{ f_id, g_id } });
+        try self.setCaller(.{ .caller = caller_id, .callee = a });
+        return try self.call(a);
     }
 
     pub fn push(self: *Runtime, f: Func) !Func.Id {
@@ -399,16 +382,22 @@ pub const Runtime = struct {
         return @intCast(self.memory.items.len - 1);
     }
 
-    pub fn setCaller(self: *Runtime, args: struct { caller: Func.Id, callee: Func.Id }) !void {
+    pub fn setCaller(self: *Runtime, args: struct { caller: ?Func.Id, callee: Func.Id }) !void {
         try self._call_graph.put(self.memory.allocator, args.callee, .{ .caller = args.caller });
+    }
+
+    pub fn saveRes(self: *Runtime, callee: Func.Id, res: Func) void {
+        std.debug.assert(res != .apply);
+        const progress = self._call_graph.getPtr(callee).?;
+        progress.res = res;
     }
 };
 
 fn testOutputEql(expected: []const u8, code: []const Func) !void {
-    var runtime = Runtime.init(std.testing.allocator);
+    var runtime = try Runtime.init(std.testing.allocator, code);
     defer runtime.deinit();
 
-    _ = try runtime.interpret(code);
+    _ = try runtime.interpret();
     try std.testing.expectEqualStrings(expected, runtime.output.constSlice());
 }
 
@@ -417,10 +406,10 @@ fn testCodeOutput(code: []const u8, expected: []const u8) !void {
     defer bytecode.deinit();
     try parse(&bytecode, code);
 
-    var runtime = Runtime.init(std.testing.allocator);
+    var runtime = try Runtime.init(std.testing.allocator, bytecode.items);
     defer runtime.deinit();
 
-    _ = try runtime.interpret(bytecode.items);
+    _ = try runtime.interpret();
     try std.testing.expectEqualStrings(expected, runtime.output.constSlice());
 }
 
@@ -473,8 +462,8 @@ test s {
 }
 
 test c {
-    // try testCodeOutput("``cir", "\n");
-    try testCodeOutput("```s `ck ir", "\n\n");
+    try testCodeOutput("``cir", "\n");
+    // try testCodeOutput("```s `ck ir", "\n\n");
     // try testCodeOutput("`c``s`kr``si`ki", "");
     // ```s `ck ir -> ```s `k<cont> ir -> ` ``k<cont>r `ir -> ` <cont>r -> ```s r ir -> ` `rr `ir -> `r
     // try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
