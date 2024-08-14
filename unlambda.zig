@@ -227,6 +227,12 @@ pub const Runtime = struct {
     _should_resume: Func.Id = std.math.maxInt(Func.Id),
     const Progress = struct { res: ?Func = null, caller: ?Func.Id };
 
+    pub fn initFromCode(allocator: std.mem.Allocator, code: []const u8) !Runtime {
+        var res = Runtime.init(allocator, &.{}) catch unreachable;
+        try parse(&res.memory, code);
+        return res;
+    }
+
     pub fn init(allocator: std.mem.Allocator, code: []const Func) !Runtime {
         var res = .{
             .memory = std.ArrayList(Func).init(allocator),
@@ -402,11 +408,7 @@ fn testOutputEql(expected: []const u8, code: []const Func) !void {
 }
 
 fn testCodeOutput(code: []const u8, expected: []const u8) !void {
-    var bytecode = std.ArrayList(Func).init(std.testing.allocator);
-    defer bytecode.deinit();
-    try parse(&bytecode, code);
-
-    var runtime = try Runtime.init(std.testing.allocator, bytecode.items);
+    var runtime = try Runtime.initFromCode(std.testing.allocator, code);
     defer runtime.deinit();
 
     _ = try runtime.interpret();
