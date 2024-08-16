@@ -286,10 +286,13 @@ pub const Runtime = struct {
     pub fn apply(self: *Runtime, apply_id: Func.Id) error{OutOfMemory}!?Func.Id {
         const f_id, const g_id = self.get(apply_id).apply;
         std.log.warn("apply({}, {}, {})", .{ apply_id, f_id, g_id });
+        std.log.warn("{any}", .{self.memory.items});
         const caller = if (self._call_graph.get(apply_id)) |progress| progress.caller else null;
-        if (self.isReady(apply_id)) |_| {
-            return caller;
-        }
+        // if (self.isReady(apply_id)) |_| {
+        // TODO: we have a problem here, those can be invalidated by a continuation.
+        // We should avoid this. Currently this is only needed for s.
+        // return caller;
+        // }
         if (self.isReady(f_id) == null) {
             try self.setCaller(.{ .caller = apply_id, .callee = f_id });
             return f_id;
@@ -306,9 +309,11 @@ pub const Runtime = struct {
         }
         const g = self.isReady(g_id).?;
         if (f == .c) {
-            // TODO: apply g to the continuation
-            self.saveRes(apply_id, g);
-            return caller;
+            // Instead of applying c to g, we apply g to the current continuation.
+            const res_ptr = try self.push(v);
+            const cont = try self.push(.{ ._cont = .{ .origin = apply_id, .res_ptr = res_ptr } });
+            self.memory.items[apply_id].apply = .{ g_id, cont };
+            return apply_id;
         }
 
         std.log.warn("call({}: {}, {}: {})", .{ f_id, f, g_id, g });
@@ -330,7 +335,9 @@ pub const Runtime = struct {
                 break :print g;
             },
             .k => .{ ._k1 = g_id },
-            ._k1 => |cst| self.get(cst),
+            ._k1 => |cst| blk: {
+                break :blk self.get(cst);
+            },
             .s => .{ ._s1 = g_id },
             ._s1 => |x| .{ ._s2 = .{ x, g_id } },
             ._s2 => |xy| {
@@ -352,7 +359,7 @@ pub const Runtime = struct {
                 try self.setCaller(.{ .caller = apply_id, .callee = y });
                 const old = self.memory.items[apply_id];
                 self.memory.items[apply_id].apply = .{ x, y };
-                std.log.warn("```s rewrote {}: {} to {}", .{ apply_id, old, self.memory.items[apply_id] });
+                std.log.warn("```s rewrote {}: {} to ` `({},{}) `({},{})", .{ apply_id, old, self.get(xy[0]), g, self.get(xy[1]), g });
                 return apply_id;
             },
             .v => v,
@@ -365,7 +372,22 @@ pub const Runtime = struct {
                 return delayed;
             },
             ._cont => |cont| {
+                // Store `g` as the return value of the original c.
                 self.memory.items[cont.res_ptr] = g;
+                // Invalidate the original apply result, so we apply it a seconde time with the new g.
+                self._call_graph.getPtr(cont.origin).?.res = null;
+                const og_g_id = self.memory.items[cont.origin].apply[0];
+                self.memory.items[cont.origin].apply = .{ cont.res_ptr, og_g_id };
+                // var stack_frame = cont.origin;
+                // while (self._call_graph.getPtr(stack_frame)) |progress| {
+                //     if (progress.res) |old_res| {
+                //         std.log.warn("Invalidated result for {}: {}", .{stack_frame, old_res});
+                //     }
+                //     progress.res = null;
+                //     stack_frame = progress.caller orelse break;
+                // }
+                const y = try self.push(.{ .apply = .{ xy[1], g_id } });
+                try self.setCaller(.{ .caller = apply_id, .callee = z });
                 std.log.warn("calling cont {}({})", .{ cont, g });
                 return cont.origin;
             },
@@ -465,7 +487,7 @@ test s {
 
 test c {
     try testCodeOutput("``cir", "\n");
-    // try testCodeOutput("```s `ck ir", "\n\n");
+    try testCodeOutput("```s `ck ir", "\n\n");
     // try testCodeOutput("`c``s`kr``si`ki", "");
     // ```s `ck ir -> ```s `k<cont> ir -> ` ``k<cont>r `ir -> ` <cont>r -> ```s r ir -> ` `rr `ir -> `r
     // try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
