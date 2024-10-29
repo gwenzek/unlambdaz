@@ -4,39 +4,39 @@ Unlambda: Your Functional Programming Language Nightmares Come True
 
 ## Table of contents
 
-    What's New in Unlambda World?
-    Introduction
-        What is Unlambda?
-        What does Unlambda look like?
-        What are the principles of Unlambda?
-        Links and meta-links to other obfuscated programming languages
-    Tutorial
-        Functions and application
-        Combinators
-        Abstraction elimination
-            Making abstraction elimination more efficient
-        More Unlambda builtins
-            v
-            .x
-            d
-            c
-        HOWTO: various programming techniques
-            How do I write a loop in Unlambda?
-            How can I represent numbers in Unlambda?
-            How can I represent lists (and related data structures) in Unlambda?
-            How do I write tests and booleans in Unlambda?
-    A note about the Unlambda Quine Contest
-    Implementing Unlambda
-        First-class functions
-        First-class continuations
-        Garbage collection
-        Promises
-        Can Unlambda be compiled?
-    Unlambda reference
-    Unlambda distribution (download Unlambda here)
-    Comprehensive Unlambda Archive Network
+* What's New in Unlambda World?
+* Introduction
+    * What is Unlambda?
+    * What does Unlambda look like?
+    * What are the principles of Unlambda?
+    * Links and meta-links to other obfuscated programming languages
+* Tutorial
+    * Functions and application
+    * Combinators
+    * Abstraction elimination
+        * Making abstraction elimination more efficient
+    * More Unlambda builtins
+        * `v`
+        * `.x`
+        * `d`
+        * `c`
+    * HOWTO: various programming techniques
+        * How do I write a loop in Unlambda?
+        * How can I represent numbers in Unlambda?
+        * How can I represent lists (and related data structures) in Unlambda?
+        * How do I write tests and booleans in Unlambda?
+* A note about the Unlambda Quine Contest
+* Implementing Unlambda
+    * First-class functions
+    * First-class continuations
+    * Garbage collection
+    * Promises
+    * Can Unlambda be compiled?
+* Unlambda reference
+* Unlambda distribution (download Unlambda here)
+* Comprehensive Unlambda Archive Network
 
-What's New in Unlambda World?
+## What's New in Unlambda World?
 
 (If you don't know what Unlambda is, skip this section and move directly to the introduction below.)
 
@@ -51,12 +51,12 @@ Introduction
 
     “The effect of reading an Unlambda program is like habing your brains smashed out by a Lisp sexp wrapped around an ENIAC. You won't find anything like it west of Alpha Centauri.” The Hitch-Hacker's Guide to Programming
 
-What is Unlambda?
+## What is Unlambda?
 
 Unlambda is a programming language. Nothing remarkable there. The originality of Unlambda is that it stands as the unexpected intersection of two marginal families of languages:
 
-    Obfuscated programming languages, of which the canonical representative is Intercal. This means that the language was deliberately built to make programming painful and difficult (i.e. fun and challenging).
-    Functional programming languages, of which the canonical representative is Scheme (a Lisp dialect). This means that the basic object manipulated by the language (and indeed the only one as far as Unlambda is concerned) is the function.
+* Obfuscated programming languages, of which the canonical representative is Intercal. This means that the language was deliberately built to make programming painful and difficult (i.e. fun and challenging).
+* Functional programming languages, of which the canonical representative is Scheme (a Lisp dialect). This means that the basic object manipulated by the language (and indeed the only one as far as Unlambda is concerned) is the function.
 
 Obfuscated programming languages (see below for links) are typically made nasty by either strongly restricting the set of allowed operations in the language, or making them very different from what programmers are used to, or both. (Of course, the goal is to do that while still being Turing-complete.) Unlambda does this (note, however, that the operations permitted were not chosen at random: they have their theoretical importance). But whereas most obfuscated programming languages try to somehow model the Turing Machine paradigm, Unlambda does not use a tape, array or stack. Nor is it binary-oriented; as a matter of fact, it does not manipulate integers in any way. Other remarkable (un)features of Unlambda are the fact that it does not have any variables, data structures or code constructs (such as loops, conditionals and such like).
 
@@ -67,44 +67,48 @@ Despite all these apparently unsurmountable limitations, Unlambda is fully Turin
 Mathematically, the core of the language can be described as an implementation of the lambda-calculus without the lambda operation, relying entirely on the K and S combinators. Hence the name “Unlambda”. It uses head (“eager”, “by value”, “strict”) evaluation. I cannot claim originality there. However, as far as I know, I am the first to have taken this theoretical concept and made it into an actual (deliberately obfuscated) programming language. I added a couple of functions (chosen for their obscurity) to the language so as to make output (and, in version 2, input) possible, or just to make things even more obscure (delay and call/cc are such).
 
 A note on terminology: The phrase “purely functional programming language” is usually applied to languages, like Haskell or Clean, which are lazy and demand explicit sequencing of side effects. I dislike this terminology: for one thing, a “functional” programming language is one in which functions have first-class citizenship, so a “purely functional” one should be one where, as in Unlambda, only functions have first-class citizenship. And what are usually called “purely functional programming languages” should be called, exactly as I just did, lazily evaluating programming languages with explicitly sequenced side effects. All these points are orthogonal: it is quite possible to conceive a lazy programming language which is not functional, or an eager (i.e. non-lazy) functional programming language which still demands explicit sequencing of side effects. In any case, this is to say that I might, on occasion, speak of Unlambda as a “purely functional” programming language, although, with the usual terminology, it is not.
-What does Unlambda look like?
+
+### What does Unlambda look like?
 
 Well, let's discuss an example: the following Unlambda program calculates and prints the Fibonacci numbers (as lines of asterisks)
 
-```s``s``sii`ki
-  `k.*``s``s`ks
- ``s`k`s`ks``s``s`ks``s`k`s`kr``s`k`sikk
-  `k``s`ksk
+    ```s``s``sii`ki
+      `k.*``s``s`ks
+     ``s`k`s`ks``s``s`ks``s`k`s`kr``s`k`sikk
+      `k``s`ksk
 
 (All whitespace is optional and arbitrary. Some former versions of this page gave a uselessly complicated and inefficient program.)
 
 You're right: it's not very readable. Writing Unlambda programs isn't really as hard as it might seem; however, reading Unlambda programs is practically impossible. We'll be explaining what all this means later on, but let's just stick to basic observations for the moment.
 
 As you can see, the most common character (essentially, it makes up half of any Unlambda program) is the backquote (ASCII number 96=0x60). The backquote represents Unlambda's apply operation. After that come the S and K combinators (and I, but I can be done away with entirely). Some other characters can occur in Unlambda programs but they are not nearly so common. Besides the backquote and the letters s, k and i, the above program has r and .* as its only other building blocks: these are the Unlambda printing functions (r prints a newline and .* prints an asterisk). The more sophisticated Unlambda functions (v, d, c, e and the input functions) are not used here at all.
-What are the principles of Unlambda?
+
+### What are the principles of Unlambda?
 
 The number one principle of the Unlambda language is that everything is a function: this is true in the sense that Unlambda is a profile of the pure untyped lambda calculus. (Well, to be honest, the d builtin isn't precisely a function, but we will consider it as such anyway.)
 
 Despite Unlambda being a form of the lambda calculus, it does not have a lambda (abstraction) operation. Rather, this operation must be replaced by the use of the S, K and I combinators — this can be done mechanically using abstraction elimination. Because there is no abstraction, functions are not named in Unlambda (except the builtin ones): there are no variables or such thing. This doesn't mean you can't build up your own functions. Nor does the fact that there are only functions in Unlambda prevent you from coming up with data structures and the like, but you just have to represent them with ad hoc functions. In fact, you can so well build your own structures and such that Unlambda is (and, to work, must be) garbage-collected like any decent high-level language.
 
 So, everything is a function. To start with, you have the builtin functions (i, k, s and the like), and you can do one thing: apply a function F to a function G, the result being denoted `FG. It is from this basic idea that Unlambda is built.
-Links and meta-links to other obfuscated programming languages
 
-    The Random Programming Languages List, by Ben Olmstead (also the inventor of Malbolge, probably the most devilish language in existence), is a quite comprehensive list of evil programming languages. It mentions Unlambda.
-    The Turing Tarpit, by Brian Connors (named after an entry in the Jargon File), is a similar list of Bad Languages and other cyberlinguistic horrors. It also mentions Unlambda.
-    Ryan Kusnery's list of Weird Programming Languages is also quite good, despite its not mentioning Unlambda.
-    Prfnoff's Obfuscated Languages list mentions two languages he wrote (not usually included in similar lists): Fromage and BAK.
-    Eric S. Raymond's famous Retrocomputing Museum lists a few thinks that cause a feeling “between nostalgia and nausea”.
-    Intercal remains the archetype of the Obfuscated Programming Language.
-    Cats-Eye Technologies (used to be http://www.cats-eye.com/ and has moved to http://www.catseye.mb.ca/: thanks to Rafael Kaufmann for pointing this out) hosts a lot of items of related interest, including the famous BrainF*** language, whose name quite appropriately describes the point of all these languages. They also have a page on fortune's lesser-known programming languages.
-    The “Institute of Applied Iconoclasm” maintains an Esoteric Languages Database, which lists Unlambda. They also seem to have a very high opinion of it, and of myself ;-)
-    The Esoteric Programming Languages Ring of which this site is part:
-    [ Previous 5 Sites | Previous | Next | Next 5 Sites | Random Site | List Sites ]
+### Links and meta-links to other obfuscated programming languages
 
-Tutorial
+* The Random Programming Languages List, by Ben Olmstead (also the inventor of Malbolge, probably the most devilish language in existence), is a quite comprehensive list of evil programming languages. It mentions Unlambda.
+* The Turing Tarpit, by Brian Connors (named after an entry in the Jargon File), is a similar list of Bad Languages and other cyberlinguistic horrors. It also mentions Unlambda.
+* Ryan Kusnery's list of Weird Programming Languages is also quite good, despite its not mentioning Unlambda.
+* Prfnoff's Obfuscated Languages list mentions two languages he wrote (not usually included in similar lists): Fromage and BAK.
+* Eric S. Raymond's famous Retrocomputing Museum lists a few thinks that cause a feeling “between nostalgia and nausea”.
+* Intercal remains the archetype of the Obfuscated Programming Language.
+* Cats-Eye Technologies (used to be http://www.cats-eye.com/ and has moved to http://www.catseye.mb.ca/: thanks to Rafael Kaufmann for pointing this out) hosts a lot of items of related interest, including the famous BrainF*** language, whose name quite appropriately describes the point of all these languages. They also have a page on fortune's lesser-known programming languages.
+* The “Institute of Applied Iconoclasm” maintains an Esoteric Languages Database, which lists Unlambda. They also seem to have a very high opinion of it, and of myself ;-)
+* The Esoteric Programming Languages Ring of which this site is part:
+    Previous 5 Sites | Previous | Next | Next 5 Sites | Random Site | List Sites
+
+## Tutorial
 
 Although the very idea of a tutorial for such an obfuscated language as Unlambda is patently absurd, I shall try to give a brief introduction to the concepts before dwelling in the details of the reference section (which is also very short considering how small Unlambda is as a whole).
-Functions and application
+
+### Functions and application
 
 As has been mentioned in the introduction, the only objects that the Unlambda programming language manipulates are functions. Every function takes exactly one argument (that is also a function) and returns one value (that is also a function).
 
@@ -125,7 +129,8 @@ A note about evaluation order: when Unlambda is evaluating an expression `FG, it
 (Perhaps it would be clearer to describe things by distinguishing expressions and functions, where the latter are obtained by evaluating the former. This is what the Java version of the Unlambda interpreter does, for example (whereas the Scheme version does not). It is merely a matter of choice. True, the distinction might help in understanding the d builtin, since it keeps an expression in its unevaluated form.)
 
 We now turn to the description of the Unlambda builtins.
-Combinators
+
+### Combinators
 
 The k and s builtins are the core of the language. Just these two suffice to make Unlambda Turing complete (although .x is also necessary if you want to print anything). The k builtin is easy enough to describe: it takes two arguments (in curried fashion, as explained above) and returns the first. Thus, ``kXY evaluates to X (evaluated). Note that Y is still evaluated in the process. The s builtin is slightly more delicate. It takes three arguments, X, Y and Z, and evaluates as does ``XZ`YZ.
 
@@ -136,7 +141,8 @@ To take an example, consider ```skss: here s is applied to three arguments, k, s
 We also mention immediately the i function: it is simply the identity function In other words, it takes an argument and returns it intact. The i function is not strictly necessary but it is practical. It could be replaced by ``skk. (Indeed, ```skkX evaluates as ``kX`kX because of the s, which in turn evaluates as X because of the k.)
 
 To summarize, the k builtin is a “constant function constructor”. That is, for all X, `kX is the constant function with value X. The s builtin corresponds to “substituted application”: that is, ``sXY is a function that, instead of applying X to Y directly, will apply each of them to Z (the argument) first, and then one to the other. Finally, i is the identity function.
-Abstraction elimination
+
+### Abstraction elimination
 
 We will now try to describe the central process of abstraction elimination. This is not necessary to understand how Unlambda works, but it is necessary to understand how you can do anything with it.
 
@@ -144,9 +150,9 @@ The central feature which appears to be missing from Unlambda is that of variabl
 
 So, we take an expression F involving $x, and we want to eliminate the starting lambda in ^xF. We do this by induction on the complexity of F; there are three cases which must be taken into account: either F is builtin (or some variable other than $x, if we permit this), or F is $x, or F is an application, say, `GH, with G and H simpler expressions (which, by induction, we know how to reduce). So we consider these three cases separately:
 
-    In the first case, we want to eliminate the lambda from ^xF, where F does not depend on $x. So it is the constant function with value F. But, as we know, this is `kF. So we know how to eliminate abstraction in this case.
-    In the second case, we want to eliminate the lambda from ^x$x. But this is precisely the identity function, so it reduces as i.
-    In the third case, we want to eliminate the lambda from ^x`GH, assuming we know how to eliminate the lambda from ^xG and from ^xH. But the function we are considering takes an X and applies it to ^xG, then to ^xH, and finally applies the result of one to the result of the other. This is precisely the role of the s builtin. So ^x`GH is no other than ``s^xG^xH (and by eliminating the lambda from the inner expressions we get what we wanted).
+* In the first case, we want to eliminate the lambda from ^xF, where F does not depend on $x. So it is the constant function with value F. But, as we know, this is `kF. So we know how to eliminate abstraction in this case.
+* In the second case, we want to eliminate the lambda from ^x$x. But this is precisely the identity function, so it reduces as i.
+* In the third case, we want to eliminate the lambda from ^x`GH, assuming we know how to eliminate the lambda from ^xG and from ^xH. But the function we are considering takes an X and applies it to ^xG, then to ^xH, and finally applies the result of one to the result of the other. This is precisely the role of the s builtin. So ^x`GH is no other than ``s^xG^xH (and by eliminating the lambda from the inner expressions we get what we wanted).
 
 Finally, abstraction elimination is described mechanically as follows: consider the expression F and we want to eliminate the lambda from ^xF. Scan the F expression from left to right: for every ` (backquote) encountered, write ``s (by virtue of the third case above); for every $x encountered, write i (by virtue of the second case); and for any builtin or any variable other than $x, write `k followed by the thing in question.
 
@@ -172,17 +178,17 @@ Another shortcut in abstraction elimination is to spot expressions such as ^x`F$
 Note also that the V builtin can always be abstracted to itself. (That is, `kv is functionally identical to v.)
 
 ## More Unlambda builtins
-## v
+### `v`
 
 The v function is a kind of “black hole”. It takes an argument, ignores it and returns v. It can be used to swallow any number of arguments.
 
 The v function can be implemented using s, k and i (and hence, using s and k only). Indeed, it can be written using the lambda expression `^h^x`$h$h^h^x`$h$h (which evaluates to ^x of the same thing), and abstraction elimination shows that this is ` ``s``s`kskk ``s``s`kskk (here is an example when some incorrect shortcuts in an abstraction elimination can be disastrous, for example if ` ``s`kk``sii ``s`kk``sii were used instead, as obtained by attempting to reduce ^h^x`$h$h as ^h`k`$h$h).
 
-## .x
+### `.x`
 
 The .x function is the only way to perform output in Unlambda (note that in Unlambda version 1 there is no way to perform input). This function takes an argument and, like the identity function, returns it unchanged. Only contrary to the identity function it has a side effect, namely to print the character x on the standard output (this writing takes place when .x is applied). Note that while this function is written with two characters, it is still one function; on no account should .x be thought of as something applied to x (and, just to insist, there is no such function as . (dot), only .x (dot x)). The r function is just one instance of the .x function, namely when x is the newline character. Thus, the `ri program has the effect of printing a newline (so would `rv or `rr or `r(anything), but r alone doesn't do it, because here the r function isn't applied: here my note about the impossibility of currying functions of zero arguments should become clearer).
 
-## d
+### `d`
 
 The d function is an exception to the normal rules of evaluation (hence it should be called a special form rather than a function). When Unlambda is evaluating `FG and F evaluates to d (for example when F is d) then G is not evaluated. The result `dG is a promise to evaluate G: that is, G is kept unevaluated until the promise is itself applied to an expression H. When that happens, G is finally evaluated (after H is), and it is applied to H. This is called forcing the promise.
 
@@ -190,7 +196,7 @@ For example, `d`ri does nothing (and remains unevaluated), and ``d`rii prints a 
 
 Writing `d`kF is another form of promise (perhaps more customary but at the same time less transparent): when it is applied to an arbitrary argument Y, then Y is ignored and F is evaluated and returned. This possibility has already been mentioned in the discussion on shortcuts during abstraction elimination.
 
-## c
+### `c`
 
 The c (“call with current continuation”) function is probably the most difficult to explain (if you are familiar with the corresponding function in Scheme, it will help a lot). I suggest you try reading the call/cc page at this point. c called with an argument F will apply F to the current continuation. The current continuation is a special function which, when it is applied to X, has the effect of making c return immediately the value X. In other words, c can return in two ways: if F applied to the continuation evaluates normally, then its return value is that of c; but if F calls the continuation at some point, c will immediately return the value passed to the continuation.
 
@@ -218,14 +224,14 @@ Only one thing is wrong with our attempt: <loop> cannot be part of its own expan
 
 Finally, to start our program, we apply to <loop> the function ^h``$h$hi (i.e. ``s``sii`ki), and our final program is
 
-```s``sii`ki
- ``s``s`ks
-     ``s``s`ks``s`k`s`kr
-               ``s`k`si``s`k`s`k
-                               `d````````````.H.e.l.l.o.,. .w.o.r.l.d.!
-                        k
-      k
-  `k``s``s`ksk`k.*
+    ```s``sii`ki
+     ``s``s`ks
+         ``s``s`ks``s`k`s`kr
+                   ``s`k`si``s`k`s`k
+                                   `d````````````.H.e.l.l.o.,. .w.o.r.l.d.!
+                            k
+          k
+      `k``s``s`ksk`k.*
 
 (Concerning indentation: the idea is that, if we insert a line break between an expression F and an expression G to which F is applied, then we start G on the same column as F; furthermore, we then always insert a line break after G.)
 
@@ -251,10 +257,10 @@ Using this representation, the various operations are quite simple to perform on
 
 As an example of the use of Church integers, we construct an Unlambda program that prints a line of 1729 stars. To do this, we use the fact that 1729 is the sum of 103 and 93 (Srinivasa Ramanujan in memoriam), so we write the program as `<print>`^n``<add>`<3>$n`<3>`<inc>$n`<2><3>, (we have used the fact that 9 is 32 and 10 is its successor), so `<print>```s``s`k<add><3>``s`k<3><inc>`<2><3> and after replacement our program is finally
 
-```s`kr``s``si`k.*`ki
- ```s``s`k``si`k`s``s`ksk``s``s`ksk``s``s`kski
-   ``s`k``s``s`ksk``s``s`kski`s``s`ksk
-  ```s``s`kski``s``s`ksk``s``s`kski
+    ```s`kr``s``si`k.*`ki
+     ```s``s`k``si`k`s``s`ksk``s``s`ksk``s``s`kski
+       ``s`k``s``s`ksk``s``s`kski`s``s`ksk
+      ```s``s`kski``s``s`ksk``s``s`kski
 
 How about comparing the Church integers? Sure enough, that can be done. I suggest the following — however, keep in mind that their performance (both in size and time) is far worse than the previous functions, and they are on the whole far less “polished”.
 
