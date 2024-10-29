@@ -35,7 +35,10 @@ pub const Func = union(enum) {
     print: u8,
     // TODO @, ?*, | to read stdin
 
-    // TODO e
+    /// The e function takes an argument X.
+    /// It exits immediately, pretending (if the interpreter cares) that the result of the evaluation of the program is X.
+    /// e (“exit”) only in Unlambda version 2 and greater
+    e,
 
     pub fn format(
         self: Func,
@@ -46,7 +49,7 @@ pub const Func = union(enum) {
         _ = fmt;
         _ = options;
         switch (self) {
-            .i, .k, .s, .v, .d, .c => _ = try writer.write(@tagName(self)),
+            .i, .k, .s, .v, .d, .c, .e => _ = try writer.write(@tagName(self)),
             .apply => |fg| try writer.print("`({d},{d})", .{ fg[0], fg[1] }),
             ._k1 => |f| try writer.print("k1({d})", .{f}),
             ._d1 => |f| try writer.print("d1({d})", .{f}),
@@ -71,6 +74,7 @@ pub const v: Func = .v;
 pub const r: Func = .{ .print = '\n' };
 pub const d: Func = .d;
 pub const c: Func = .c;
+pub const e: Func = .e;
 
 pub fn p(char: u8) Func {
     return .{ .print = char };
@@ -108,7 +112,7 @@ pub fn _parse(out: *std.ArrayList(Func), code: []const u8, pos: usize) error{ Ou
             out.items[n - 1] = .{ .apply = .{ n, m } };
             return remaining2;
         },
-        inline 'd', 'i', 's', 'k', 'v' => |name| {
+        inline 'd', 'i', 's', 'k', 'v', 'e' => |name| {
             const f = @unionInit(Func, &.{name}, {});
             try out.append(f);
             return pos + 1;
@@ -222,6 +226,7 @@ pub const Runtime = struct {
     output: std.BoundedArray(u8, 4096) = .{},
     stdout: std.fs.File,
     max_tick: u64 = 1024,
+    return_value: ?Func = null,
 
     _call_graph: std.ArrayListUnmanaged(Progress) = .{},
     _should_resume: Func.Id = std.math.maxInt(Func.Id),
@@ -277,7 +282,10 @@ pub const Runtime = struct {
         var id: Func.Id = start_id;
         self._call_graph.items[start_id] = .{ .caller = undefined, .pos = .root_node };
         while (true) {
-            continuation = try self.apply(id);
+            continuation = self.apply(id) catch |err| return switch (err) {
+                error.Exit => self.return_value.?,
+                error.OutOfMemory => error.OutOfMemory,
+            };
             if (continuation) |cont| {
                 id = cont;
             } else break;
@@ -303,7 +311,7 @@ pub const Runtime = struct {
         };
     }
 
-    pub fn apply(self: *Runtime, apply_id: Func.Id) error{OutOfMemory}!?Func.Id {
+    pub fn apply(self: *Runtime, apply_id: Func.Id) error{ Exit, OutOfMemory }!?Func.Id {
         const f_id, const g_id = self.get(apply_id).apply;
         std.log.warn("apply({}, {}, {})", .{ apply_id, f_id, g_id });
         std.log.warn("{any}", .{self.memory.items});
@@ -341,9 +349,13 @@ pub const Runtime = struct {
 
         std.log.warn("call({}: {}, {}: {})", .{ f_id, f, g_id, g });
         const res: Func = switch (f) {
-            .c, .d => unreachable,
-            .apply => unreachable,
+            .c, .d => unreachable, // explicitly handled above.
+            .apply => unreachable, // apply is detected with `isReady` above.
             .i => g,
+            .e => {
+                self.return_value = g;
+                return error.Exit;
+            },
             .print => |char| print: {
                 if (builtin.is_test) {
                     if (self.output.len >= self.output.capacity()) {
@@ -476,7 +488,7 @@ pub const Runtime = struct {
                     try self._print(writer, g_id);
                 }
             },
-            inline .s, .k, .i, .d, .c, .v => |_, tag| _ = try writer.write(@tagName(tag)),
+            inline .s, .k, .i, .d, .c, .v, .e => |_, tag| _ = try writer.write(@tagName(tag)),
             .print => |char| {
                 if (char == '\n') {
                     try writer.writeByte('r');
@@ -587,6 +599,14 @@ test c {
     // ```s `ck ir -> ```s `k<cont> ir -> ` ``k<cont>r `ir -> ` <cont>r -> ```s r ir -> ` `rr `ir -> `rr -> r
     try expectCodeOutput("```s `ck ir", "\n\n");
     // try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
+}
+
+test e {
+    var runtime = try Runtime.initFromCode(std.testing.allocator, "``cie");
+    defer runtime.deinit();
+
+    const res = try runtime.interpret();
+    try std.testing.expectEqual(.e, res);
 }
 
 test "infinite loop" {
