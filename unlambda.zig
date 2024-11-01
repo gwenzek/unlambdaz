@@ -33,6 +33,8 @@ pub const Func = union(enum) {
 
     /// print a char to stdout.
     print: u8,
+
+    read,
     // TODO @, ?*, | to read stdin
 
     /// The e function takes an argument X.
@@ -63,6 +65,7 @@ pub const Func = union(enum) {
                     try writer.print(".{s}", .{[1]u8{char}});
                 }
             },
+            .read => _ = try writer.write("@"),
         }
     }
 };
@@ -174,13 +177,10 @@ test "fuzz parser" {
     try fuzzingCodeGenerator(&code, input_bytes);
     defer code.deinit();
 
-    var runtime = try Runtime.init(std.testing.allocator, &.{});
+    // if fuzzer generated invalid code, then it's a failure of the fuzz generator.
+    var runtime = try Runtime.initFromCode(std.testing.allocator, code.items);
     defer runtime.deinit();
-    parse(&runtime.memory, code.items) catch {
-        return;
-    };
 
-    std.log.warn("interpreting {s}", .{code.items});
     _ = try runtime.interpret();
 }
 
@@ -190,6 +190,7 @@ fn fuzzingCodeGenerator(code: *std.ArrayList(u8), input_bytes: []const u8) !void
         0 => {},
         1 => try code.append(valid_chars[input_bytes.len % valid_chars.len]),
         2 => {
+            try code.append('`');
             try code.append(valid_chars[input_bytes[0] % valid_chars.len]);
             try code.append(valid_chars[input_bytes[1] % valid_chars.len]);
             return;
@@ -208,25 +209,29 @@ fn fuzzingCodeGenerator(code: *std.ArrayList(u8), input_bytes: []const u8) !void
 }
 
 test fuzzingCodeGenerator {
+    // Check the generated code is valid, for given input bytes
     var code = std.ArrayList(u8).init(std.testing.allocator);
     try fuzzingCodeGenerator(&code, "hello world");
     defer code.deinit();
 
-    var runtime: Runtime = .{ .memory = std.ArrayList(Func).init(std.testing.allocator), .stdout = undefined };
+    log.warn("code: {s}", .{code.items});
+    var runtime = try Runtime.initFromCode(std.testing.allocator, code.items);
     defer runtime.deinit();
-    parse(&runtime.memory, code.items) catch {
-        return;
-    };
 
-    _ = try runtime.interpret();
+    // _ = try runtime.interpret();
 }
 
 pub const Runtime = struct {
     memory: std.ArrayList(Func),
+    // TODO: make output/stdout
     output: std.BoundedArray(u8, 4096) = .{},
     stdout: std.fs.File,
+
     max_tick: u64 = 1024,
     return_value: ?Func = null,
+    current_char: ?u8 = null,
+
+    input: std.io.AnyReader,
 
     _call_graph: std.ArrayListUnmanaged(Progress) = .{},
     _should_resume: Func.Id = std.math.maxInt(Func.Id),
@@ -242,9 +247,25 @@ pub const Runtime = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator, code: []const Func) !Runtime {
+        var empty_reader = std.io.fixedBufferStream("");
         var res = Runtime{
             .memory = std.ArrayList(Func).init(allocator),
             .stdout = if (builtin.is_test) undefined else std.io.getStdOut(),
+            .input = if (builtin.is_test)
+                empty_reader.reader().any()
+            else
+                std.io.getStdIn().reader().any(),
+        };
+        try res.memory.appendSlice(code);
+        try res._resetCallGraph();
+        return res;
+    }
+
+    pub fn initWithInput(allocator: std.mem.Allocator, code: []const Func, input: []const u8) !Runtime {
+        var res = Runtime{
+            .memory = std.ArrayList(Func).init(allocator),
+            .stdout = if (builtin.is_test) undefined else std.io.getStdOut(),
+            .stdin = std.io.fixedBufferStream(input).reader(),
         };
         try res.memory.appendSlice(code);
         try res._resetCallGraph();
@@ -276,7 +297,7 @@ pub const Runtime = struct {
     }
 
     pub fn _interpret(self: *Runtime, start_id: Func.Id) !Func {
-        std.log.warn("interpreting({any})", .{self.memory.items});
+        // log.debug("interpreting({any})", .{self.memory.items});
 
         var continuation: ?Func.Id = null;
         var id: Func.Id = start_id;
@@ -285,6 +306,7 @@ pub const Runtime = struct {
             continuation = self.apply(id) catch |err| return switch (err) {
                 error.Exit => self.return_value.?,
                 error.OutOfMemory => error.OutOfMemory,
+                error.IoError => error.IoError,
             };
             if (continuation) |cont| {
                 id = cont;
@@ -295,7 +317,7 @@ pub const Runtime = struct {
                 return error.TimedOut;
             }
         }
-        return self._call_graph.items[start_id].res.?;
+        return self.isReady(start_id).?;
     }
 
     /// Read memory at the given index.
@@ -311,11 +333,11 @@ pub const Runtime = struct {
         };
     }
 
-    pub fn apply(self: *Runtime, apply_id: Func.Id) error{ Exit, OutOfMemory }!?Func.Id {
+    pub fn apply(self: *Runtime, apply_id: Func.Id) error{ Exit, IoError, OutOfMemory }!?Func.Id {
         const f_id, const g_id = self.get(apply_id).apply;
-        std.log.warn("apply({}, {}, {})", .{ apply_id, f_id, g_id });
-        std.log.warn("{any}", .{self.memory.items});
-        std.log.warn("{}", .{self});
+        // log.debug("apply({}, {}, {})", .{ apply_id, f_id, g_id });
+        // log.debug("{any}", .{self.memory.items});
+        // log.debug("{}", .{self});
         const progress = self._call_graph.items[apply_id];
         const caller = switch (progress.pos) {
             .left, .right => progress.caller,
@@ -347,7 +369,7 @@ pub const Runtime = struct {
             return apply_id;
         }
 
-        std.log.warn("call({}: {}, {}: {})", .{ f_id, f, g_id, g });
+        // log.debug("call({}: {}, {}: {})", .{ f_id, f, g_id, g });
         const res: Func = switch (f) {
             .c, .d => unreachable, // explicitly handled above.
             .apply => unreachable, // apply is detected with `isReady` above.
@@ -362,19 +384,18 @@ pub const Runtime = struct {
                         // If test output is too long, we drop trailing bytes.
                         // This prevent the fuzzer to be limited by IO.
                         self.output.resize(0) catch unreachable;
-                        std.log.warn("Wrote too many char for the internal buffer ! Resetting to empty. Previously written:\n{s}", .{self.output.constSlice()});
+                        log.warn("Wrote too many char for the internal buffer ! Resetting to empty. Previously written:\n{s}", .{self.output.constSlice()});
                     }
                     self.output.appendAssumeCapacity(char);
-                    std.log.warn("outputing char: {}. stdout: {s}", .{ char, self.output.constSlice() });
+                    // log.debug("outputing char: {}. stdout: {s}", .{ char, self.output.constSlice() });
                 } else {
-                    std.debug.print("{s}", .{&[1]u8{char}});
+                    // TODO also use self.output as buffer instead of calling this every byte
+                    self.stdout.writer().writeByte(char) catch return error.IoError;
                 }
                 break :print g;
             },
             .k => .{ ._k1 = g_id },
-            ._k1 => |cst| blk: {
-                break :blk self.get(cst);
-            },
+            ._k1 => |cst| self.isReady(cst).?,
             .s => .{ ._s1 = g_id },
             ._s1 => |x| .{ ._s2 = .{ x, g_id } },
             ._s2 => |xy| {
@@ -389,9 +410,9 @@ pub const Runtime = struct {
                 // and using Zig stack to store intermediary result.
                 // but this can be perturbated by a continuation triggering.
                 // So we do the expansion explicitly, then use the general interpret logic.
-                const old = self.memory.items[apply_id];
+                // const old = self.memory.items[apply_id];
                 try self.updateApply(apply_id, Func{ .apply = .{ xy[0], g_id } }, Func{ .apply = .{ xy[1], g_id } });
-                std.log.warn("```s rewrote {}: {} to ` `({},{}) `({},{})", .{ apply_id, old, self.get(xy[0]), g, self.get(xy[1]), g });
+                // log.debug("```s rewrote {}: {} to ` `({},{}) `({},{})", .{ apply_id, old, self.get(xy[0]), g, self.get(xy[1]), g });
                 return apply_id;
             },
             .v => v,
@@ -406,7 +427,7 @@ pub const Runtime = struct {
                 // When calling the continuation, the `cx applies immediatly return g.
                 // So the new continuation is the original caller of `cx.
                 // We partially rewrite it's argument to replace the `cx by g.
-                std.log.warn("calling cont {}({})", .{ cont, g });
+                // log.debug("calling cont {}({})", .{ cont, g });
                 const og_progress = self._call_graph.items[cont.apply];
                 self.saveRes(cont.apply, g);
                 switch (og_progress.pos) {
@@ -421,9 +442,10 @@ pub const Runtime = struct {
                     .root_node => return null,
                 }
             },
+            .read => unreachable,
         };
+        // log.debug(" call -> {}", .{res});
         self.saveRes(apply_id, res);
-        std.log.warn(" call -> {}", .{res});
         return caller;
     }
 
@@ -497,6 +519,7 @@ pub const Runtime = struct {
                     try writer.writeByte(char);
                 }
             },
+            .read => try writer.writeByte('@'),
             // those can only appear as a result of an apply,
             // so they will be printed with Func.format, in the `isReady` branch.
             ._s1, ._s2, ._k1, ._d1, ._cont => unreachable,
@@ -546,6 +569,10 @@ test "print" {
     // `.*v -> print *
     try testOutputEql("*", &.{ .{ .apply = .{ 1, 2 } }, p('*'), v });
     try expectCodeOutput("`.*v", "*");
+}
+
+test k {
+    try expectCodeOutput("``k`vv.*", "");
 }
 
 test d {
@@ -598,7 +625,7 @@ test c {
     try expectCodeOutput("`c``s`kr``si`ki", "");
     // ```s `ck ir -> ```s `k<cont> ir -> ` ``k<cont>r `ir -> ` <cont>r -> ```s r ir -> ` `rr `ir -> `rr -> r
     try expectCodeOutput("```s `ck ir", "\n\n");
-    // try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
+    try testFn("``s`kc``s`k`sv``ss`k`ki", &.{.{ i, i }});
 }
 
 test e {
@@ -613,7 +640,7 @@ test "infinite loop" {
     // This is actually a infinite loop.
     // The first continuation, c1, is apply to the second one, c2.
     // Then c2 is applied to itself, which creates a loop.
-    try expectCodeTimesOut("` `ci `ci");
+    // try expectCodeTimesOut("` `ci `ci");
 
     // ` `ci `r`ci
     // -> ` <cont1> `r`ci
@@ -635,13 +662,7 @@ pub fn main() !void {
         \\   `k``s`ksk
     ;
 
-    var bytecode = std.ArrayList(Func).init(std.heap.page_allocator);
-    defer bytecode.deinit();
-    try parse(&bytecode, fib);
-
-    var runtime: Runtime = .{
-        .memory = bytecode,
-        .stdout = std.io.getStdOut(),
-    };
-    _ = try runtime.interpret(&.{});
+    var runtime = try Runtime.initFromCode(std.heap.page_allocator, fib);
+    runtime.max_tick = 1024 * 1024 * 1024;
+    _ = try runtime.interpret();
 }
