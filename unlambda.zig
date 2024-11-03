@@ -237,6 +237,27 @@ test e {
     try expectCodeReturns("``cie", .e);
 }
 
+test "read" {
+    {
+        var runtime = try Runtime.initFromCode(std.testing.allocator, "```s@@i");
+        defer runtime.deinit();
+        var stream = std.io.fixedBufferStream("ok");
+        runtime.input = stream.reader().any();
+        const res = try runtime.interpret();
+        try std.testing.expectEqual(2, stream.pos);
+        try std.testing.expectEqual(.i, res);
+    }
+    {
+        var runtime = try Runtime.initFromCode(std.testing.allocator, "```s@@i");
+        defer runtime.deinit();
+        var stream = std.io.fixedBufferStream("!");
+        runtime.input = stream.reader().any();
+        const res = try runtime.interpret();
+        try std.testing.expectEqual(1, stream.pos);
+        try std.testing.expectEqual(.v, res);
+    }
+}
+
 pub const Runtime = struct {
     memory: std.ArrayList(Func),
     // TODO: make output/stdout
@@ -271,17 +292,6 @@ pub const Runtime = struct {
                 empty_reader.reader().any()
             else
                 std.io.getStdIn().reader().any(),
-        };
-        try res.memory.appendSlice(code);
-        try res._resetCallGraph();
-        return res;
-    }
-
-    pub fn initWithInput(allocator: std.mem.Allocator, code: []const Func, input: []const u8) !Runtime {
-        var res = Runtime{
-            .memory = std.ArrayList(Func).init(allocator),
-            .stdout = if (builtin.is_test) undefined else std.io.getStdOut(),
-            .stdin = std.io.fixedBufferStream(input).reader(),
         };
         try res.memory.appendSlice(code);
         try res._resetCallGraph();
@@ -455,7 +465,15 @@ pub const Runtime = struct {
                     .root_node => return null,
                 }
             },
-            .read => unreachable,
+            .read => {
+                var status: Func = .i;
+                self.current_char = self.input.readByte() catch blk: {
+                    status = .v;
+                    break :blk null;
+                };
+                try self.updateApply(apply_id, g, status);
+                return apply_id;
+            },
         };
         log.debug(" call -> {}", .{res});
         self.saveRes(apply_id, res);
@@ -617,11 +635,15 @@ pub fn _parse(out: *std.ArrayList(Func), code: []const u8, pos: usize) error{ Ou
             try out.append(p(code[pos + 1]));
             return pos + 2;
         },
+        '@' => {
+            try out.append(.read);
+            return pos + 1;
+        },
         // skip whitespaces
         ' ', '\n', '\t' => _parse(out, code, pos + 1),
         // TODO comments #...
         else => |char| {
-            log.warn("Invalide unlambda code. unexpected char {d} at pos {d}", .{ char, pos });
+            log.warn("Invalide unlambda code. unexpected char '{s}'(0x{x}) at pos {d}", .{ &[1]u8{char}, char, pos });
             return error.Invalid;
         },
     };
